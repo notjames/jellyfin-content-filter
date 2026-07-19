@@ -88,23 +88,45 @@ Edit `/etc/jellyfin-content-filter/filterd.env`:
 
 Keep this file root-owned with mode `0600`.
 
-Create the service account/directories, then start the service:
+The install script places account and directory declarations at:
+
+```text
+/usr/lib/sysusers.d/jellyfin-content-filter.conf
+/usr/lib/tmpfiles.d/jellyfin-content-filter.conf
+```
+
+Apply those declarations explicitly:
 
 ```sh
-systemd-sysusers
-systemd-tmpfiles --create
-systemctl daemon-reload
-systemctl enable --now jellyfin-content-filter.service
-systemctl status jellyfin-content-filter.service
+sudo systemd-sysusers /usr/lib/sysusers.d/jellyfin-content-filter.conf
+sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/jellyfin-content-filter.conf
+```
+
+This creates the `jellyfin-content-filter` system user and the persistent `/var/lib/jellyfin-content-filter` and `/etc/jellyfin-content-filter` directories. systemd creates `/run/jellyfin-content-filter` whenever the service starts.
+
+Verify and start the service:
+
+```sh
+getent passwd jellyfin-content-filter
+id jellyfin-content-filter
+sudo systemctl daemon-reload
+sudo systemctl enable --now jellyfin-content-filter.service
+sudo systemctl status jellyfin-content-filter.service
 ```
 
 The daemon listens only on `/run/jellyfin-content-filter/filterd.sock`.
 
 ## 3. Install the Jellyfin server plugin
 
-Install `dist/jellyfin-content-filter-plugin-0.1.0.zip` using Jellyfin's supported plugin installation workflow, then restart Jellyfin.
+Install `dist/jellyfin-content-filter-plugin-0.1.0.zip` using Jellyfin's supported plugin installation workflow, then restart Jellyfin. A manual installation is expected at `/var/lib/jellyfin/plugins/Content Filter_0.1.0/Jellyfin.Plugin.ContentFilter.dll`.
 
-In **Dashboard → Plugins → Content Filter**:
+Because this development build is not published in a remote Jellyfin catalog, Jellyfin 10.11's unified plugin-details page may report that it cannot get repository details even when the assembly loaded successfully. Open the configuration page directly:
+
+```text
+http://YOUR_SERVER:8096/web/#/configurationpage?name=ContentFilter
+```
+
+Then:
 
 1. set the socket to `/run/jellyfin-content-filter/filterd.sock`;
 2. enter the same token used for `FILTERD_AUTH_TOKEN`;
@@ -116,11 +138,40 @@ The server plugin authenticates viewers, checks library visibility, schedules an
 
 ## 4. Install JavaScript Injector
 
-Install and enable the community JavaScript Injector plugin on the Jellyfin server. Restart Jellyfin if the injector changes `index.html`.
+For Jellyfin 10.11:
 
-Register scripts as authenticated/private scripts so they are loaded only after Jellyfin authentication. Serve or paste only the built files from `web/dist` or `desktop/dist`, not TypeScript source files.
+1. Open **Dashboard → Plugins → Catalog**.
+2. Open the repository settings using the gear icon.
+3. Add a repository named `JavaScript Injector`.
+4. Use this exact JSON manifest URL:
 
-If the server is used by both Web and Desktop clients, register both bundles. Their runtime guards select the appropriate target and prevent duplicate schedulers.
+   ```text
+   https://raw.githubusercontent.com/n00bcodr/jellyfin-plugins/main/10.11/manifest.json
+   ```
+
+5. Save, return to **Catalog**, find **JavaScript Injector**, and install it.
+6. Restart Jellyfin:
+
+   ```sh
+   sudo systemctl restart jellyfin
+   ```
+
+7. Open **Dashboard → Plugins → JavaScript Injector**.
+8. Add an enabled script named `Content Filter Web`, mark it **Requires Authentication**, and paste the complete contents of:
+
+   ```text
+   web/dist/jellyfin-content-filter.js
+   ```
+
+9. Add a second enabled, authenticated script named `Content Filter Desktop` and paste:
+
+   ```text
+   desktop/dist/jellyfin-content-filter-desktop.js
+   ```
+
+10. Save and fully reload Web clients or restart Jellyfin Desktop.
+
+Paste only the built JavaScript files, not TypeScript source files. Registering both bundles is safe: their runtime guards select the appropriate client target and prevent duplicate schedulers.
 
 ## 5A. Jellyfin Web clients
 
