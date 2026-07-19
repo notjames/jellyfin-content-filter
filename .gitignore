@@ -1,0 +1,10 @@
+node_modules/
+web/dist/
+desktop/dist/
+target/
+dist/
+playwright-report/
+test-results/
+packaging/catalog/manifest.json
+*.log
+.env

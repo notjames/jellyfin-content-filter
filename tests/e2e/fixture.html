@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <body>
+    <video controls></video>
+    <script>
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = String(input);
+        if (url.includes("/ContentFilter/Items/episode-1")) {
+          return Promise.resolve(new Response(JSON.stringify({
+            viewer: { categories: { violence: "skip" } },
+            intervals: [{ start: 10, end: 20, category: "violence" }]
+          }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return originalFetch(input, init);
+      };
+    </script>
+    <script src="/web/dist/jellyfin-content-filter.js"></script>
+    <script>
+      window.addEventListener("DOMContentLoaded", () => {
+        fetch("/jellyfin/Items/episode-1/PlaybackInfo", {
+          method: "POST",
+          headers: { Authorization: "MediaBrowser Token=test" }
+        }).catch(() => {});
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,2 @@
+d /var/lib/jellyfin-content-filter 0750 jellyfin-content-filter jellyfin-content-filter -
+d /etc/jellyfin-content-filter 0750 root jellyfin-content-filter -

@@ -1,0 +1,30 @@
+[Unit]
+Description=Jellyfin Content Filter service
+After=network.target jellyfin.service
+
+[Service]
+Type=simple
+User=jellyfin-content-filter
+Group=jellyfin
+EnvironmentFile=/etc/jellyfin-content-filter/filterd.env
+ExecStart=/usr/lib/jellyfin-content-filter/filterd
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RuntimeDirectory=jellyfin-content-filter
+RuntimeDirectoryMode=0750
+StateDirectory=jellyfin-content-filter
+StateDirectoryMode=0750
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target

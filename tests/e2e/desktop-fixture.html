@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+  <body>
+    <script>
+      const signal = () => {
+        const callbacks = new Set();
+        return {
+          connect: callback => callbacks.add(callback),
+          disconnect: callback => callbacks.delete(callback),
+          emit: value => callbacks.forEach(callback => callback(value))
+        };
+      };
+      const state = { position: 0, seeks: [], mutes: [], muted: false };
+      const player = {
+        positionUpdate: signal(),
+        finished: signal(),
+        canceled: signal(),
+        stopped: signal(),
+        getPosition(callback) {
+          callback?.(state.position);
+          return state.position;
+        },
+        seekTo(position) {
+          state.seeks.push(position);
+          state.position = position;
+        },
+        setMuted(muted) {
+          state.muted = muted;
+          state.mutes.push(muted);
+        }
+      };
+      window.__desktopState = state;
+      window.__desktopPlayer = player;
+      window.jmpInfo = { mode: "desktop" };
+      window.jmpNative = { playerSeek: position => player.seekTo(position) };
+      window.api = { player };
+      window.apiPromise = Promise.resolve(window.api);
+      window._mpvVideoPlayerInstance = { isMuted: () => state.muted };
+
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = String(input);
+        if (url.includes("/ContentFilter/Items/episode-1")) {
+          return Promise.resolve(new Response(JSON.stringify({
+            viewer: { categories: { violence: "skip" } },
+            intervals: [{ start: 10, end: 20, category: "violence" }]
+          }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return originalFetch(input, init);
+      };
+    </script>
+    <script src="/desktop/dist/jellyfin-content-filter-desktop.js"></script>
+    <script>
+      window.addEventListener("DOMContentLoaded", () => {
+        fetch("/jellyfin/Items/episode-1/PlaybackInfo", {
+          method: "POST",
+          headers: { Authorization: "MediaBrowser Token=test" }
+        }).catch(() => {});
+      });
+    </script>
+  </body>
+</html>

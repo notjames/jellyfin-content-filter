@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Content Filter</title>
+</head>
+<body>
+<div id="ContentFilterConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-checkbox">
+    <div data-role="content">
+        <div class="content-primary">
+            <h1>Content Filter</h1>
+            <form id="ContentFilterConfigForm">
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="SocketPath">Daemon socket path</label>
+                    <input id="SocketPath" is="emby-input" type="text" required>
+                </div>
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="DaemonToken">New daemon token</label>
+                    <input id="DaemonToken" is="emby-input" type="password" autocomplete="new-password">
+                    <div class="fieldDescription" id="TokenStatus">Leave blank to keep the existing token.</div>
+                </div>
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="TimeoutSeconds">Timeout (seconds)</label>
+                    <input id="TimeoutSeconds" is="emby-input" type="number" min="1" max="120" required>
+                </div>
+                <label class="emby-checkbox-label">
+                    <input id="FailOpen" is="emby-checkbox" type="checkbox">
+                    <span>Fail open when timeline lookup is unavailable</span>
+                </label>
+                <label class="emby-checkbox-label">
+                    <input id="EnableScheduledAnalysis" is="emby-checkbox" type="checkbox">
+                    <span>Enable scheduled library analysis</span>
+                </label>
+                <button is="emby-button" type="submit" class="raised button-submit block">
+                    <span>Save</span>
+                </button>
+            </form>
+        </div>
+    </div>
+    <script>
+        (() => {
+            const page = document.querySelector('#ContentFilterConfigPage');
+            const request = (path, options = {}) => ApiClient.ajax({
+                url: ApiClient.getUrl(path),
+                dataType: 'json',
+                contentType: 'application/json',
+                ...options
+            });
+
+            page.addEventListener('pageshow', async () => {
+                Dashboard.showLoadingMsg();
+                try {
+                    const config = await request('/ContentFilter/configuration');
+                    page.querySelector('#SocketPath').value = config.SocketPath;
+                    page.querySelector('#TimeoutSeconds').value = config.TimeoutSeconds;
+                    page.querySelector('#FailOpen').checked = config.FailOpen;
+                    page.querySelector('#EnableScheduledAnalysis').checked = config.EnableScheduledAnalysis;
+                    page.querySelector('#TokenStatus').textContent = config.TokenConfigured
+                        ? 'A token is configured. Leave blank to keep it.'
+                        : 'No token is configured.';
+                } finally {
+                    Dashboard.hideLoadingMsg();
+                }
+            });
+
+            page.querySelector('#ContentFilterConfigForm').addEventListener('submit', async event => {
+                event.preventDefault();
+                Dashboard.showLoadingMsg();
+                const token = page.querySelector('#DaemonToken').value;
+                try {
+                    await request('/ContentFilter/configuration', {
+                        type: 'PUT',
+                        data: JSON.stringify({
+                            SocketPath: page.querySelector('#SocketPath').value,
+                            DaemonToken: token || null,
+                            TimeoutSeconds: Number(page.querySelector('#TimeoutSeconds').value),
+                            FailOpen: page.querySelector('#FailOpen').checked,
+                            EnableScheduledAnalysis: page.querySelector('#EnableScheduledAnalysis').checked
+                        })
+                    });
+                    Dashboard.processPluginConfigurationUpdateResult();
+                } finally {
+                    Dashboard.hideLoadingMsg();
+                }
+            });
+        })();
+    </script>
+</div>
+</body>
+</html>

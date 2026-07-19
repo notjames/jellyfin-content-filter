@@ -1,0 +1,26 @@
+{
+  "name": "jellyfin-content-filter-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "build:desktop": "vite build --config vite.desktop.config.ts",
+    "build:all": "npm run build && npm run build:desktop",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "lint": "tsc --noEmit && eslint .",
+    "catalog": "node packaging/catalog/build-manifest.mjs",
+    "package": "npm run build:all && npm run catalog"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.31.0",
+    "@playwright/test": "^1.54.1",
+    "eslint": "^9.31.0",
+    "happy-dom": "^20.11.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.38.0",
+    "vite": "^7.0.5",
+    "vitest": "^3.2.4"
+  }
+}

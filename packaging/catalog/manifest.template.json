@@ -1,0 +1,20 @@
+[
+  {
+    "guid": "6f7805b3-ea58-4c5a-a914-c74e733ace42",
+    "name": "Content Filter",
+    "description": "Category-aware playback controls backed by a local content-filter service.",
+    "overview": "Skip or mute configured content intervals.",
+    "owner": "jellyfin-content-filter contributors",
+    "category": "General",
+    "versions": [
+      {
+        "version": "{{VERSION}}",
+        "changelog": "{{CHANGELOG}}",
+        "targetAbi": "{{TARGET_ABI}}",
+        "sourceUrl": "{{SOURCE_URL}}",
+        "checksum": "{{CHECKSUM}}",
+        "timestamp": "{{TIMESTAMP}}"
+      }
+    ]
+  }
+]
