@@ -261,7 +261,7 @@ Actual skip and mute behavior can be tested after at least one candidate interva
 
 ## 6. Analyze and review media
 
-Run **Analyze library for content filtering** from Jellyfin scheduled tasks (or wait for automatic scans when titles are added). Each analyzed title gets a sidecar `Title.filter.json` next to the media file with raw detections. Playback uses those detections plus the viewer's mute/skip preferences. If analysis is incomplete (`partial`/`failed`), viewers who enabled filtering see a warning and playback continues unfiltered; problem details are stored for administrator investigation via `GET /ContentFilter/problems`.
+Run **Analyze library for content filtering** from Jellyfin scheduled tasks (or wait for automatic scans when titles are added). Only **movies and TV episodes** are queued; music and other audio library items are ignored. Each analyzed title gets a sidecar `Title.filter.json` next to the media file with raw detections. Playback uses those detections plus the viewer's mute/skip preferences. If analysis is incomplete (`partial`/`failed`), viewers who enabled filtering see a warning and playback continues unfiltered; problem details are stored for administrator investigation via `GET /ContentFilter/problems`. Playing music never enables filtering and does not show the incomplete-analysis warning.
 
 Open **Content Filter Review** in the Jellyfin dashboard to:
 

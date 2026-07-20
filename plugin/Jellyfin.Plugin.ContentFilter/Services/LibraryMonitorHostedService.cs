@@ -1,4 +1,3 @@
-using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.ContentFilter.Models;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -41,18 +40,12 @@ public sealed class LibraryMonitorHostedService : IHostedService
 
     private void OnItemAdded(object? sender, ItemChangeEventArgs args)
     {
-        var item = args.Item;
-        if (item is null || item.IsFolder || item.IsVirtualItem || string.IsNullOrWhiteSpace(item.Path))
+        if (!MediaEligibility.IsVideoFilterTarget(args.Item))
         {
             return;
         }
 
-        if (item.GetBaseItemKind() is not (BaseItemKind.Movie or BaseItemKind.Episode))
-        {
-            return;
-        }
-
-        _ = EnqueueAsync(item);
+        _ = EnqueueAsync(args.Item!);
     }
 
     private async Task EnqueueAsync(BaseItem item)

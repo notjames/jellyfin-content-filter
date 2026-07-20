@@ -49,9 +49,16 @@ public sealed class ContentFilterController : ControllerBase
             return Unauthorized();
         }
 
-        if (_libraryManager.GetItemById<BaseItem>(itemId, userId) is null)
+        var item = _libraryManager.GetItemById<BaseItem>(itemId, userId);
+        if (item is null)
         {
             return NotFound();
+        }
+
+        // Music and other non-video playback should never trigger filter warnings or actions.
+        if (!MediaEligibility.IsVideoFilterTarget(item))
+        {
+            return InactiveVideoFilterConfig();
         }
 
         return await SendAsync<BrowserFilterConfigDto>(
@@ -91,9 +98,15 @@ public sealed class ContentFilterController : ControllerBase
             return Unauthorized();
         }
 
-        if (_libraryManager.GetItemById<BaseItem>(itemId, userId) is null)
+        var item = _libraryManager.GetItemById<BaseItem>(itemId, userId);
+        if (item is null)
         {
             return NotFound();
+        }
+
+        if (!MediaEligibility.IsVideoFilterTarget(item))
+        {
+            return BadRequest("Content filtering applies only to movies and TV episodes.");
         }
 
         return await SendWithoutResponseAsync(
@@ -208,9 +221,9 @@ public sealed class ContentFilterController : ControllerBase
             return NotFound();
         }
 
-        if (string.IsNullOrWhiteSpace(item.Path))
+        if (!MediaEligibility.IsVideoFilterTarget(item))
         {
-            return BadRequest("The selected item has no local media path.");
+            return BadRequest("Content filtering analysis applies only to movies and TV episodes.");
         }
 
         return await SendAsync<AnalysisEnqueueDto>(
@@ -222,6 +235,16 @@ public sealed class ContentFilterController : ControllerBase
                 request.Force),
             cancellationToken).ConfigureAwait(false);
     }
+
+    private static BrowserFilterConfigDto InactiveVideoFilterConfig()
+        => new(
+            new CategoryActionsDto(new Dictionary<string, string>()),
+            new CategoryActionsDto(new Dictionary<string, string>()),
+            Array.Empty<BrowserIntervalDto>(),
+            FilterStatus: "ready",
+            Problems: Array.Empty<FilterProblemDto>(),
+            FiltersEnabled: false,
+            Warning: null);
 
     /// <summary>Gets an analysis job's status.</summary>
     [HttpGet("analysis/{jobId:guid}")]

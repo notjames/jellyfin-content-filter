@@ -15,7 +15,7 @@ use db::{AnalysisJob, MediaAnalysisState, Repository, RepositoryError};
 use filter_core::{
   Candidate, CandidateStatus, CategorySettings, Evidence, FilterDocument, FilterProblem,
   FilterReadiness, PlaybackConfig, PlaybackInterval, Policy, PublishedTimeline, ReviewAction,
-  ReviewEdit, ViewerAction, apply_policy, media_fingerprint,
+  ReviewEdit, ViewerAction, apply_policy, is_audio_media_path, media_fingerprint,
 };
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
@@ -186,6 +186,12 @@ async fn enqueue_analysis(State(state): State<AppState>,
   if request.media_id.trim().is_empty()
   {
     return Err(ApiError::bad_request("media_id must not be empty"));
+  }
+  if is_audio_media_path(&request.media_path)
+  {
+    return Err(ApiError::bad_request(
+      "content filtering analysis applies only to video files; audio/music paths are ignored",
+    ));
   }
   let job = state.jobs
                  .enqueue(request.media_id.trim(), &request.media_path, request.force)?;
@@ -686,6 +692,21 @@ mod tests
             .await
             .unwrap();
     assert!(unknown_action.status().is_client_error());
+  }
+
+  #[tokio::test]
+  async fn analyze_rejects_audio_media_paths()
+  {
+    let (router, _dir) = test_app(None);
+    let response = router.oneshot(HttpRequest::post("/analyze")
+                                             .header("content-type", "application/json")
+                                             .body(Body::from(
+                                               r#"{"media_id":"track","media_path":"/music/song.mp3","force":true}"#,
+                                             ))
+                                             .unwrap())
+                         .await
+                         .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
   }
 
   #[tokio::test]

@@ -2,8 +2,8 @@ use crate::db::{AnalysisJob, JobStatus, MediaAnalysisState, Repository};
 use filter_core::{
   Action, Candidate, CandidateStatus, Category, Evidence, FilterDetection, FilterDocument,
   FilterProblem, FilterReadiness, Interval, ProfanityConfig, ProfanityMatcher, Severity,
-  WhisperOptions, ffmpeg_audio_spec, ffmpeg_frame_sample_spec, ffprobe_spec, media_fingerprint,
-  openvino_spec, parse_subtitles, whisper_spec_with_options,
+  WhisperOptions, ffmpeg_audio_spec, ffmpeg_frame_sample_spec, ffprobe_spec, is_audio_media_path,
+  media_fingerprint, openvino_spec, parse_subtitles, whisper_spec_with_options,
 };
 use serde::Deserialize;
 use std::{
@@ -336,6 +336,10 @@ async fn analyze(repository: &Repository,
                  -> anyhow::Result<AnalysisOutcome>
 {
   let file = log_file_path(media_path);
+  if is_audio_media_path(media_path)
+  {
+    anyhow::bail!("refusing to analyze audio/music file");
+  }
   if !media_path.is_file()
   {
     anyhow::bail!("media path is not a file");

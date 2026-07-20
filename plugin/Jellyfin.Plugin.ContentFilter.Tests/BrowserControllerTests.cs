@@ -4,6 +4,8 @@ using Jellyfin.Plugin.ContentFilter.Controllers;
 using Jellyfin.Plugin.ContentFilter.Models;
 using Jellyfin.Plugin.ContentFilter.Services;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Audio;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -147,6 +149,45 @@ public sealed class BrowserControllerTests
         daemon.VerifyAll();
     }
 
+    [Fact]
+    public async Task GetItemConfigReturnsInactiveConfigForAudioWithoutCallingDaemon()
+    {
+        var itemId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var daemon = new Mock<IDaemonClient>(MockBehavior.Strict);
+        var library = new Mock<ILibraryManager>(MockBehavior.Strict);
+        library.Setup(manager => manager.GetItemById<BaseItem>(itemId, userId))
+            .Returns(new Audio { Path = "/music/track.mp3" });
+        var controller = CreateController(daemon.Object, library.Object, userId);
+
+        var result = await controller.GetItemFilterConfiguration(itemId, CancellationToken.None);
+
+        Assert.NotNull(result.Value);
+        Assert.False(result.Value!.FiltersEnabled);
+        Assert.Null(result.Value.Warning);
+        Assert.Empty(result.Value.Intervals);
+        daemon.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task EnqueueAnalysisRejectsAudioItems()
+    {
+        var itemId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var daemon = new Mock<IDaemonClient>(MockBehavior.Strict);
+        var library = new Mock<ILibraryManager>(MockBehavior.Strict);
+        library.Setup(manager => manager.GetItemById<BaseItem>(itemId))
+            .Returns(new Audio { Path = "/music/track.mp3" });
+        var controller = CreateController(daemon.Object, library.Object, userId);
+
+        var result = await controller.EnqueueAnalysis(
+            new EnqueueAnalysisRequest(itemId, Force: true),
+            CancellationToken.None);
+
+        Assert.IsType<BadRequestObjectResult>(result.Result);
+        daemon.VerifyNoOtherCalls();
+    }
+
     private static BrowserFilterConfigDto EmptyConfiguration()
         => new(
             new CategoryActionsDto(new Dictionary<string, string>()),
@@ -161,7 +202,7 @@ public sealed class BrowserControllerTests
     {
         var library = new Mock<ILibraryManager>(MockBehavior.Strict);
         library.Setup(manager => manager.GetItemById<BaseItem>(itemId, userId))
-            .Returns(Mock.Of<BaseItem>());
+            .Returns(new Movie { Path = "/media/movie.mp4" });
         return library;
     }
 

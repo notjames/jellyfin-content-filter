@@ -465,6 +465,22 @@ pub fn media_fingerprint(path: impl AsRef<Path>) -> std::io::Result<String>
   Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// Extensions treated as audio-only; content filtering targets video titles.
+const AUDIO_EXTENSIONS: &[&str] =
+  &["aac", "aiff", "alac", "ape", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav", "wma"];
+
+/// Returns true when the path looks like an audio-only file that should not be analyzed.
+pub fn is_audio_media_path(path: impl AsRef<Path>) -> bool
+{
+  path.as_ref()
+      .extension()
+      .and_then(|extension| extension.to_str())
+      .is_some_and(|extension| {
+        AUDIO_EXTENSIONS.iter()
+                        .any(|audio| extension.eq_ignore_ascii_case(audio))
+      })
+}
+
 #[derive(Debug, Error)]
 pub enum SubtitleError
 {
@@ -939,6 +955,15 @@ mod tests
     let first = media_fingerprint(&path).unwrap();
     File::create(&path).unwrap().write_all(b"two").unwrap();
     assert_ne!(first, media_fingerprint(&path).unwrap());
+  }
+
+  #[test]
+  fn detects_audio_only_media_extensions()
+  {
+    assert!(is_audio_media_path("/library/music/song.mp3"));
+    assert!(is_audio_media_path("/library/music/Song.FLAC"));
+    assert!(!is_audio_media_path("/library/movies/movie.mp4"));
+    assert!(!is_audio_media_path("/library/shows/episode.mkv"));
   }
 
   #[test]

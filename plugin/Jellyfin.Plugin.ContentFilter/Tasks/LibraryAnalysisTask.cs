@@ -73,7 +73,7 @@ public sealed class LibraryAnalysisTask : IScheduledTask
             Recursive = true,
             IsVirtualItem = false,
             IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode],
-        }).Where(item => !item.IsFolder && !string.IsNullOrWhiteSpace(item.Path)).ToArray();
+        }).Where(MediaEligibility.IsVideoFilterTarget).ToArray();
 
         for (var index = 0; index < items.Length; index++)
         {
