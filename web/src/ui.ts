@@ -2,6 +2,8 @@ import type { FilterApi } from "./api";
 import type { Action, FilterConfig } from "./types";
 
 const ACTIONS: Action[] = ["allow", "skip", "mute"];
+const WARNING_AUTO_DISMISS_MS = 12_000;
+const WARNING_FADE_MS = 600;
 const CATEGORY_LABELS: Record<string, string> = {
   language: "Language",
   profanity: "Profanity",
@@ -24,6 +26,8 @@ export class FilterUi {
   private config?: FilterConfig;
   private itemId?: string;
   private api?: FilterApi;
+  private warningDismissTimer?: ReturnType<typeof setTimeout>;
+  private warningFadeTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly onConfigChanged?: (config: FilterConfig) => void) {
     this.host.id = "jcf-root";
@@ -32,18 +36,26 @@ export class FilterUi {
       <style>
         :host{position:fixed;right:16px;bottom:80px;z-index:999999;font:14px system-ui;color:#fff}
         button{border:0;border-radius:5px;padding:9px 12px;background:#00a4dc;color:#fff;cursor:pointer}
-        #warning{display:none;max-width:360px;margin-bottom:8px;padding:10px;border-radius:5px;background:#8b1e1e;box-shadow:0 2px 8px #0008}
+        #warning{display:none;max-width:360px;margin-bottom:8px;padding:10px 36px 10px 10px;border-radius:5px;background:#8b1e1e;box-shadow:0 2px 8px #0008;opacity:1;transition:opacity ${WARNING_FADE_MS}ms ease;position:relative;line-height:1.35}
+        #warning.visible{display:block}
+        #warning.fading{opacity:0;pointer-events:none}
+        #warning-dismiss{position:absolute;top:6px;right:6px;width:28px;height:28px;padding:0;border-radius:4px;background:transparent;color:#fff;font:18px/1 system-ui;cursor:pointer}
+        #warning-dismiss:hover{background:#ffffff22}
         dialog{width:min(520px,calc(100vw - 32px));color:#eee;background:#202020;border:1px solid #555;border-radius:8px}
         label{display:grid;grid-template-columns:1fr 120px 120px;gap:8px;align-items:center;margin:8px 0}
         select{padding:6px;background:#333;color:#fff;border:1px solid #666}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
       </style>
-      <div id="warning" role="alert"></div>
+      <div id="warning" role="alert">
+        <span id="warning-text"></span>
+        <button id="warning-dismiss" type="button" aria-label="Dismiss notification">×</button>
+      </div>
       <dialog><h2>Content filter</h2><p>Choose viewer defaults and optional overrides for this title.</p>
         <p id="availability"></p>
         <div id="categories"></div><div class="actions"><button id="cancel">Cancel</button><button id="save">Save</button></div>
       </dialog>`;
     this.root.querySelector("#cancel")?.addEventListener("click", () => this.dialog.close());
     this.root.querySelector("#save")?.addEventListener("click", () => void this.save());
+    this.root.querySelector("#warning-dismiss")?.addEventListener("click", () => this.dismissWarning());
     document.body.append(this.host);
     this.osdObserver.observe(document.body, { childList: true, subtree: true });
   }
@@ -63,15 +75,59 @@ export class FilterUi {
     this.config = undefined;
     this.host.hidden = true;
     this.osdButton?.remove();
-    this.warning("");
+    this.clearWarning();
     if (this.dialog.open) this.dialog.close();
   }
 
   warning(message: string): void {
     const element = this.root.querySelector<HTMLElement>("#warning");
-    if (!element) return;
-    element.textContent = message;
-    element.style.display = message ? "block" : "none";
+    const text = this.root.querySelector<HTMLElement>("#warning-text");
+    if (!element || !text) return;
+    this.clearWarningTimers();
+    if (!message) {
+      element.classList.remove("visible", "fading");
+      element.style.display = "none";
+      text.textContent = "";
+      return;
+    }
+    text.textContent = message;
+    element.classList.remove("fading");
+    element.style.display = "block";
+    element.classList.add("visible");
+    this.warningDismissTimer = setTimeout(() => this.fadeWarning(), WARNING_AUTO_DISMISS_MS);
+  }
+
+  private dismissWarning(): void {
+    this.fadeWarning();
+  }
+
+  private fadeWarning(): void {
+    const element = this.root.querySelector<HTMLElement>("#warning");
+    if (!element?.classList.contains("visible")) return;
+    this.clearWarningTimers();
+    element.classList.add("fading");
+    this.warningFadeTimer = setTimeout(() => this.clearWarning(), WARNING_FADE_MS);
+  }
+
+  private clearWarning(): void {
+    this.clearWarningTimers();
+    const element = this.root.querySelector<HTMLElement>("#warning");
+    const text = this.root.querySelector<HTMLElement>("#warning-text");
+    if (!element || !text) return;
+    element.classList.remove("visible", "fading");
+    element.style.display = "none";
+    text.textContent = "";
+  }
+
+  private clearWarningTimers(): void {
+    if (this.warningDismissTimer !== undefined) {
+      clearTimeout(this.warningDismissTimer);
+      this.warningDismissTimer = undefined;
+    }
+    if (this.warningFadeTimer !== undefined) {
+      clearTimeout(this.warningFadeTimer);
+      this.warningFadeTimer = undefined;
+    }
   }
 
   private get dialog(): HTMLDialogElement {

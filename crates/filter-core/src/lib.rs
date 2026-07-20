@@ -753,14 +753,46 @@ pub fn whisper_spec(executable: impl Into<PathBuf>,
                     output_prefix: impl AsRef<Path>)
                     -> CommandSpec
 {
-  CommandSpec { program: executable.into(),
-                args: vec!["-m".into(),
-                           model.as_ref().as_os_str().to_owned(),
-                           "-f".into(),
-                           audio.as_ref().as_os_str().to_owned(),
-                           "-oj".into(),
-                           "-of".into(),
-                           output_prefix.as_ref().as_os_str().to_owned(),] }
+  whisper_spec_with_options(executable, model, audio, output_prefix, &WhisperOptions::default())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WhisperOptions
+{
+  pub gpu_layers: Option<u32>,
+  pub openvino_device: Option<String>,
+  pub no_gpu: bool,
+}
+
+pub fn whisper_spec_with_options(executable: impl Into<PathBuf>,
+                                 model: impl AsRef<Path>,
+                                 audio: impl AsRef<Path>,
+                                 output_prefix: impl AsRef<Path>,
+                                 options: &WhisperOptions)
+                                 -> CommandSpec
+{
+  let mut args = vec!["-m".into(),
+                      model.as_ref().as_os_str().to_owned(),
+                      "-f".into(),
+                      audio.as_ref().as_os_str().to_owned(),
+                      "-oj".into(),
+                      "-of".into(),
+                      output_prefix.as_ref().as_os_str().to_owned()];
+  if let Some(layers) = options.gpu_layers
+  {
+    args.push("--gpu-layers".into());
+    args.push(layers.to_string().into());
+  }
+  if let Some(device) = &options.openvino_device
+  {
+    args.push("--ov-e-device".into());
+    args.push(device.as_str().into());
+  }
+  if options.no_gpu
+  {
+    args.push("--no-gpu".into());
+  }
+  CommandSpec { program: executable.into(), args }
 }
 
 pub fn openvino_spec(runner: impl Into<PathBuf>,
@@ -924,6 +956,17 @@ mod tests
                                     Some(Path::new("labels.json")));
     assert!(with_labels.args.iter().any(|arg| arg == "--labels"));
     assert!(with_labels.args.iter().any(|arg| arg == "labels.json"));
+    let whisper = whisper_spec_with_options("whisper-cli",
+                                            "model.bin",
+                                            "audio.wav",
+                                            "out",
+                                            &WhisperOptions { gpu_layers: Some(99),
+                                                              openvino_device: Some("GPU".into()),
+                                                              no_gpu: false });
+    assert!(whisper.args.iter().any(|arg| arg == "--gpu-layers"));
+    assert!(whisper.args.iter().any(|arg| arg == "99"));
+    assert!(whisper.args.iter().any(|arg| arg == "--ov-e-device"));
+    assert!(whisper.args.iter().any(|arg| arg == "GPU"));
   }
 
   #[test]

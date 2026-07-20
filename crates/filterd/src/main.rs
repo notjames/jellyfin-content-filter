@@ -1,6 +1,6 @@
 use anyhow::Context;
-use filter_core::ProfanityConfig;
-use filterd::{AppState, analysis::AnalysisConfig, app, db::Repository};
+use filter_core::{ProfanityConfig, WhisperOptions};
+use filterd::{AppState, analysis::AnalysisConfig, app, db::Repository, scheduling::AnalysisSchedule};
 use std::{
   env,
   os::unix::fs::{FileTypeExt, PermissionsExt},
@@ -44,6 +44,10 @@ async fn main() -> anyhow::Result<()>
                      whisper_executable:
                        env::var_os("FILTERD_WHISPER_EXECUTABLE").map(PathBuf::from),
                      whisper_model: env::var_os("FILTERD_WHISPER_MODEL").map(PathBuf::from),
+                     whisper_options: WhisperOptions { gpu_layers: env_optional_u32("FILTERD_WHISPER_GPU_LAYERS"),
+                                                       openvino_device: env::var("FILTERD_WHISPER_OPENVINO_DEVICE").ok()
+                                                                                                                   .filter(|value| !value.is_empty()),
+                                                       no_gpu: env_bool("FILTERD_WHISPER_NO_GPU", false) },
                      openvino_runner: env::var_os("FILTERD_OPENVINO_RUNNER").map(PathBuf::from),
                      openvino_model: env::var_os("FILTERD_OPENVINO_MODEL").map(PathBuf::from),
                      openvino_labels: env::var_os("FILTERD_OPENVINO_LABELS").map(PathBuf::from),
@@ -65,10 +69,18 @@ async fn main() -> anyhow::Result<()>
                                                   case_sensitive:
                                                     env_bool("FILTERD_PROFANITY_CASE_SENSITIVE",
                                                              false) } };
+  let schedule = AnalysisSchedule::from_env();
+  let concurrency = env_parse("FILTERD_ANALYSIS_CONCURRENCY", 2);
   let state = AppState::new(repository,
-                            analysis,
-                            env_parse("FILTERD_ANALYSIS_CONCURRENCY", 2),
+                            analysis.clone(),
+                            schedule,
+                            concurrency,
                             env::var("FILTERD_AUTH_TOKEN").ok().filter(|value| !value.is_empty()));
+  tracing::info!(concurrency,
+                 whisper = analysis.whisper_executable.is_some(),
+                 openvino = analysis.openvino_runner.is_some(),
+                 database = %database_path.display(),
+                 "filterd starting");
   // Requeue orphaned running jobs, collapse duplicate queued rows, and drain the backlog.
   state.jobs.start_dispatcher();
   let listener =
@@ -101,6 +113,11 @@ fn env_parse<T>(name: &str, default: T) -> T
   where T: std::str::FromStr
 {
   env::var(name).ok().and_then(|value| value.parse().ok()).unwrap_or(default)
+}
+
+fn env_optional_u32(name: &str) -> Option<u32>
+{
+  env::var(name).ok().and_then(|value| value.parse().ok())
 }
 
 fn env_bool(name: &str, default: bool) -> bool

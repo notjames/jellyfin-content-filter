@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod db;
+pub mod scheduling;
 
 use analysis::{AnalysisConfig, JobManager};
 use axum::{
@@ -33,11 +34,12 @@ impl AppState
 {
   pub fn new(repository: Repository,
              analysis: AnalysisConfig,
+             schedule: scheduling::AnalysisSchedule,
              concurrency: usize,
              auth_token: Option<String>)
              -> Self
   {
-    let jobs = JobManager::new(repository.clone(), analysis, concurrency);
+    let jobs = JobManager::new(repository.clone(), analysis, schedule, concurrency);
     Self { repository, jobs, auth_token: auth_token.map(Arc::from) }
   }
 }
@@ -499,7 +501,7 @@ mod tests
   {
     let dir = tempfile::tempdir().unwrap();
     let repository = Repository::open(dir.path().join("api.db")).unwrap();
-    let state = AppState::new(repository, AnalysisConfig::default(), 1, token);
+    let state = AppState::new(repository, AnalysisConfig::default(), scheduling::AnalysisSchedule::always_on(), 1, token);
     (app(state, 4096), dir)
   }
 
@@ -589,7 +591,7 @@ mod tests
                   analyzed_at_ms: 1,
                 })
               .unwrap();
-    let router = app(AppState::new(repository, AnalysisConfig::default(), 1, None), 4096);
+    let router = app(AppState::new(repository, AnalysisConfig::default(), scheduling::AnalysisSchedule::always_on(), 1, None), 4096);
 
     let viewer_response =
       router.clone()
@@ -643,7 +645,7 @@ mod tests
                   analyzed_at_ms: 1,
                 })
               .unwrap();
-    let router = app(AppState::new(repository, AnalysisConfig::default(), 1, None), 4096);
+    let router = app(AppState::new(repository, AnalysisConfig::default(), scheduling::AnalysisSchedule::always_on(), 1, None), 4096);
     router.clone()
           .oneshot(HttpRequest::put("/viewer/user")
                              .header("content-type", "application/json")
@@ -702,7 +704,7 @@ mod tests
                                     detections: vec![] };
     document.save(FilterDocument::sidecar_path(&media_path)).unwrap();
     let repository = Repository::open(dir.path().join("api.db")).unwrap();
-    let router = app(AppState::new(repository, AnalysisConfig::default(), 1, None), 4096);
+    let router = app(AppState::new(repository, AnalysisConfig::default(), scheduling::AnalysisSchedule::always_on(), 1, None), 4096);
     let response = router.clone().oneshot(HttpRequest::post("/analyze")
                                              .header("content-type", "application/json")
                                              .body(Body::from(format!(

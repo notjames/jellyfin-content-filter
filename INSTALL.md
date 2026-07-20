@@ -96,6 +96,9 @@ Edit `/etc/jellyfin-content-filter/filterd.env`:
 - verify the FFmpeg paths;
 - keep `FILTERD_ANALYSIS_CONCURRENCY=1` initially so Intel GPU analysis does not starve Jellyfin transcoding;
 - optionally configure Whisper and OpenVINO executables and model paths.
+- for balanced GPU use on Intel iGPU, set `FILTERD_WHISPER_GPU_LAYERS=99`, `FILTERD_WHISPER_OPENVINO_DEVICE=GPU`, and keep `FILTERD_OPENVINO_DEVICE=GPU`.
+- optionally restrict queue draining to off-hours with `FILTERD_ANALYSIS_WINDOW=22:00-06:00` (local time).
+- optionally set `FILTERD_JELLYFIN_URL` and `FILTERD_JELLYFIN_API_KEY` so filterd yields while Jellyfin has active transcode sessions.
 - for OpenVINO IR, set `FILTERD_OPENVINO_MODEL` to the `.xml` path (sibling `.bin` required); for ONNX, point at the `.onnx` file.
 - optionally set `FILTERD_OPENVINO_LABELS` to a class→category JSON map (see `crates/openvino-runner/examples/labels-nsfw-binary.json`).
 
