@@ -31,7 +31,7 @@ npx playwright install chromium
 
 ## How it works
 
-The daemon extracts sidecar subtitles, optionally supplements them with whisper.cpp transcription, and can call an administrator-supplied OpenVINO content-safety runner on sampled frames using Intel `GPU` with `CPU` fallback. Machine findings remain review candidates until an administrator approves or edits them. No model weights are bundled.
+The daemon extracts sidecar subtitles, optionally supplements them with whisper.cpp transcription, and can call the bundled `openvino-runner` on sampled frames (Intel `GPU` with `CPU` fallback) when `FILTERD_OPENVINO_RUNNER` and `FILTERD_OPENVINO_MODEL` are set. Model weights are not bundled; IR models need `.xml` plus sibling `.bin`, or a single `.onnx`. Map class scores with an optional labels JSON (`FILTERD_OPENVINO_LABELS`).
 
 The clients observe standard `fetch` and `XMLHttpRequest` calls to Jellyfin's `Items/{id}/PlaybackInfo` endpoint. That supplies the item ID, authentication headers, origin, and any reverse-proxy base path. The Web target observes `<video>` elements; the separate Linux Jellyfin Desktop target controls native mpv through `window.api.player`. Both fail open and display a warning if policy cannot be loaded.
 

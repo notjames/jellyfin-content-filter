@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/filter-core", "crates/filterd"]
+members = ["crates/filter-core", "crates/filterd", "crates/openvino-runner"]
 resolver = "2"
 
 [workspace.package]
@@ -12,7 +12,9 @@ rust-version = "1.85"
 anyhow = "1"
 axum = "0.8"
 blake3 = "1"
+clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 http = "1"
 hyper-util = "0.1"
 regex = "1"

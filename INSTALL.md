@@ -40,6 +40,17 @@ From the project root:
 cargo test --workspace
 cargo build --release
 
+sudo install -m 0755 \
+  "$HOME"/projects/src/personal/jellyfin-content-filter/target/release/filterd \
+  /usr/lib/jellyfin-content-filter/filterd
+sudo install -m 0755 \
+  "$HOME"/projects/src/personal/jellyfin-content-filter/target/release/openvino-runner \
+  /usr/lib/jellyfin-content-filter/openvino-runner
+
+# if you've already installed this and are just updating it, you may need
+# to restart the service to pick up the new binary:
+sudo systemctl restart jellyfin-content-filter
+
 npm ci
 npm test
 npm run lint
@@ -85,6 +96,8 @@ Edit `/etc/jellyfin-content-filter/filterd.env`:
 - verify the FFmpeg paths;
 - keep `FILTERD_ANALYSIS_CONCURRENCY=1` initially so Intel GPU analysis does not starve Jellyfin transcoding;
 - optionally configure Whisper and OpenVINO executables and model paths.
+- for OpenVINO IR, set `FILTERD_OPENVINO_MODEL` to the `.xml` path (sibling `.bin` required); for ONNX, point at the `.onnx` file.
+- optionally set `FILTERD_OPENVINO_LABELS` to a class→category JSON map (see `crates/openvino-runner/examples/labels-nsfw-binary.json`).
 
 Keep this file root-owned with mode `0600`.
 
@@ -102,13 +115,16 @@ sudo systemd-sysusers /usr/lib/sysusers.d/jellyfin-content-filter.conf
 sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/jellyfin-content-filter.conf
 ```
 
-This creates the `jellyfin-content-filter` system user and the persistent `/var/lib/jellyfin-content-filter` and `/etc/jellyfin-content-filter` directories. systemd creates `/run/jellyfin-content-filter` whenever the service starts.
+This creates the `jellyfin` runtime identity used by the service (media sidecars must be writable next to library files) and the persistent `/var/lib/jellyfin-content-filter` and `/etc/jellyfin-content-filter` directories. systemd creates `/run/jellyfin-content-filter` whenever the service starts.
+
+On startup, `filterd` requeues orphaned `running` jobs, collapses duplicate `queued` rows (one per `media_id`), and drains the backlog through the analysis dispatcher. Restarts no longer leave the queue stranded.
+
+The unit runs as `User=jellyfin` with `ProtectSystem=strict` and `ReadWritePaths=/nas`. Without `ReadWritePaths` for your media mounts, analysis finishes but writing `*.filter.json` fails with `Read-only file system (os error 30)`. If your library lives somewhere other than `/nas`, add that path to `ReadWritePaths` (or a drop-in override).
 
 Verify and start the service:
 
 ```sh
-getent passwd jellyfin-content-filter
-id jellyfin-content-filter
+id jellyfin
 sudo systemctl daemon-reload
 sudo systemctl enable --now jellyfin-content-filter.service
 sudo systemctl status jellyfin-content-filter.service
@@ -138,6 +154,34 @@ The server plugin authenticates viewers, checks library visibility, schedules an
 
 ## 4. Install JavaScript Injector
 
+### 4.1 Install File Transformation
+
+JavaScript Injector works most reliably through File Transformation, which avoids modifying `index.html` and avoids races with plugins such as Jellyfin Enhanced. File Transformation releases are tied to exact Jellyfin patch versions.
+
+For Jellyfin Server `10.11.11.0`, manually install File Transformation `2.5.11.0`:
+
+```sh
+curl -fL \
+  https://github.com/IAmParadox27/jellyfin-plugin-file-transformation/releases/download/2.5.11.0/Release-10.11.11.zip \
+  -o /tmp/Release-10.11.11.zip
+
+echo "1ebb39a6ad9c4b738638c5e8e5b7e3c67167a7163cf9e035433329739746251c  /tmp/Release-10.11.11.zip" \
+  | sha256sum -c -
+
+sudo systemctl stop jellyfin
+sudo install -d -o jellyfin -g jellyfin \
+  "/var/lib/jellyfin/plugins/File Transformation_2.5.11.0"
+sudo unzip -o /tmp/Release-10.11.11.zip \
+  -d "/var/lib/jellyfin/plugins/File Transformation_2.5.11.0"
+sudo chown -R jellyfin:jellyfin \
+  "/var/lib/jellyfin/plugins/File Transformation_2.5.11.0"
+sudo systemctl start jellyfin
+```
+
+Check that the log reports File Transformation as loaded. If Jellyfin reports that it will become available after another restart, restart Jellyfin once more.
+
+### 4.2 Install JavaScript Injector
+
 For Jellyfin 10.11:
 
 1. Open **Dashboard → Plugins → Catalog**.
@@ -150,20 +194,31 @@ For Jellyfin 10.11:
    ```
 
 5. Save, return to **Catalog**, find **JavaScript Injector**, and install it.
-6. Restart Jellyfin:
+6. Restart Jellyfin and confirm JavaScript Injector starts without errors:
 
    ```sh
    sudo systemctl restart jellyfin
+   journalctl -u jellyfin --since "2 minutes ago" --no-pager |
+     grep -E "File Transformation|JavaScript Injector"
+   ```
+
+   With File Transformation active, `/usr/share/jellyfin/web/index.html` should remain root-owned and does not need to be writable by Jellyfin:
+
+   ```sh
+   sudo chown root:root /usr/share/jellyfin/web/index.html
+   sudo chmod 0644 /usr/share/jellyfin/web/index.html
    ```
 
 7. Open **Dashboard → Plugins → JavaScript Injector**.
-8. Add an enabled script named `Content Filter Web`, mark it **Requires Authentication**, and paste the complete contents of:
+8. Add an enabled script named `Content Filter Web`, leave **Requires Authentication** unchecked, and paste the complete JavaScript source contained inside:
 
    ```text
    web/dist/jellyfin-content-filter.js
    ```
 
-9. Add a second enabled, authenticated script named `Content Filter Desktop` and paste:
+   Do not type or paste the filename itself. Open the file in an editor, select all of its contents, and paste that code into the injector's **Script** field.
+
+9. Add a second enabled script named `Content Filter Desktop`, also leave **Requires Authentication** unchecked, and paste the complete contents—not the filename—of:
 
    ```text
    desktop/dist/jellyfin-content-filter-desktop.js
@@ -171,46 +226,39 @@ For Jellyfin 10.11:
 
 10. Save and fully reload Web clients or restart Jellyfin Desktop.
 
-Paste only the built JavaScript files, not TypeScript source files. Registering both bundles is safe: their runtime guards select the appropriate client target and prevent duplicate schedulers.
+Paste only the built JavaScript files, not TypeScript source files. These bundles contain no tokens or private data; the server API remains authenticated. Registering both bundles is safe: their runtime guards select the appropriate client target and prevent duplicate schedulers.
 
-## 5A. Jellyfin Web clients
+## 5A. Verify Jellyfin Web
 
-Register:
+There is nothing else to install here if you pasted the `Content Filter Web` script in step 4.
 
-```text
-web/dist/jellyfin-content-filter.js
+1. Open Jellyfin in a normal web browser.
+2. Force-reload it with `Ctrl+Shift+R`.
+3. Start a movie or episode.
+4. Verify that a **Content filter** button appears and ordinary playback still works.
+
+For optional diagnostics, open the browser developer console and evaluate:
+
+```js
+window.JellyfinContentFilter
 ```
 
-Reload Jellyfin Web. Start a movie or episode and verify:
+It should report `{ started: true, target: "web" }`.
 
-- a **Content filter** button appears;
-- `window.JellyfinContentFilter.target` is `web`;
-- ordinary playback remains Direct Play/Direct Stream when it did before installation.
+## 5B. Verify Linux Jellyfin Desktop
 
-The Web bundle intentionally refuses to start when it detects Jellyfin Desktop.
+There is nothing else to install here if you pasted the `Content Filter Desktop` script in step 4.
 
-## 5B. Linux Jellyfin Desktop
+1. Completely close Jellyfin Desktop, including any background process.
+2. Reopen it and connect to the server.
+3. Start a movie or episode.
+4. Verify that a **Content filter** button appears and playback still uses native mpv normally.
 
-For the current CEF-based `jellyfin/jellyfin-desktop` client, register:
-
-```text
-desktop/dist/jellyfin-content-filter-desktop.js
-```
-
-Completely close and reopen Jellyfin Desktop after changing injected scripts. Start playback and verify:
-
-- a **Content filter** button appears;
-- `window.JellyfinContentFilter.target` is `desktop`;
-- skips call native mpv seeking;
-- audio returns to its previous mute state after a mute interval.
-
-Do not use the Web bundle as the desktop implementation. If both bundles are accidentally available, desktop detection prevents the Web scheduler from starting and the global startup guard prevents duplicate schedulers.
-
-The desktop target is tied to the compatibility bridge in current Jellyfin Desktop `main`. Retest after desktop-client updates that change `native-shim.js` or `mpv-player-base.js`.
+Actual skip and mute behavior can be tested after at least one candidate interval has been analyzed and approved. The desktop target is tied to the compatibility bridge in current Jellyfin Desktop `main` and should be retested after major desktop-client updates.
 
 ## 6. Analyze and review media
 
-Run **Analyze library for content filtering** from Jellyfin scheduled tasks or enqueue an individual item through the plugin API. Machine-generated findings are pending candidates and do not filter playback until approved.
+Run **Analyze library for content filtering** from Jellyfin scheduled tasks (or wait for automatic scans when titles are added). Each analyzed title gets a sidecar `Title.filter.json` next to the media file with raw detections. Playback uses those detections plus the viewer's mute/skip preferences. If analysis is incomplete (`partial`/`failed`), viewers who enabled filtering see a warning and playback continues unfiltered; problem details are stored for administrator investigation via `GET /ContentFilter/problems`.
 
 Open **Content Filter Review** in the Jellyfin dashboard to:
 
@@ -231,8 +279,9 @@ journalctl -u jellyfin-content-filter.service
 Common issues:
 
 - **No client button:** verify JavaScript Injector is enabled, the correct target bundle is registered, and the client was fully reloaded.
+- **Injector reports success but no button appears:** another plugin that rewrites `index.html` (for example Jellyfin Enhanced) may race with JavaScript Injector during startup. After Jellyfin finishes starting, run **Dashboard → Scheduled Tasks → JavaScript Injector Startup** manually, then force-reload the client. The injector block should then remain in `index.html`.
 - **Daemon unavailable:** confirm the socket path, shared token, service status, and that Jellyfin can access the `jellyfin` group-owned socket.
-- **No detections:** configure profanity terms and ensure subtitle files are readable; configure Whisper/OpenVINO separately for speech or visual analysis.
+- **No detections:** ensure `profanity-words.json` is installed (from better-profane-words) or set `FILTERD_PROFANITY_TERMS`; verify subtitle files are readable; configure Whisper/OpenVINO separately for speech or visual analysis.
 - **Desktop skips do nothing:** confirm this is the current CEF `jellyfin/jellyfin-desktop`, not the retired Qt Jellyfin Media Player.
 - **Filtering unexpectedly stops:** the system deliberately fails open. Check server, injector, and daemon logs.
 

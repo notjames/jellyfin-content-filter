@@ -4,7 +4,8 @@ After=network.target jellyfin.service
 
 [Service]
 Type=simple
-User=jellyfin-content-filter
+# Run as the Jellyfin library owner so sidecar *.filter.json writes succeed next to media.
+User=jellyfin
 Group=jellyfin
 EnvironmentFile=/etc/jellyfin-content-filter/filterd.env
 ExecStart=/usr/lib/jellyfin-content-filter/filterd
@@ -14,6 +15,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+# ProtectSystem=strict remounts the tree read-only; allow writes under media mounts.
+ReadWritePaths=/nas
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

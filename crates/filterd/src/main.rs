@@ -46,11 +46,20 @@ async fn main() -> anyhow::Result<()>
                      whisper_model: env::var_os("FILTERD_WHISPER_MODEL").map(PathBuf::from),
                      openvino_runner: env::var_os("FILTERD_OPENVINO_RUNNER").map(PathBuf::from),
                      openvino_model: env::var_os("FILTERD_OPENVINO_MODEL").map(PathBuf::from),
+                     openvino_labels: env::var_os("FILTERD_OPENVINO_LABELS").map(PathBuf::from),
                      openvino_device: env::var("FILTERD_OPENVINO_DEVICE").unwrap_or_else(|_| {
                                                                            "GPU".into()
                                                                          }),
                      frame_interval_seconds: env_parse("FILTERD_FRAME_INTERVAL_SECONDS", 5),
-                     profanity: ProfanityConfig { terms: env_list("FILTERD_PROFANITY_TERMS"),
+                     profanity: ProfanityConfig { word_list_path: Some(env_path(
+                                                                    "FILTERD_PROFANITY_WORDS",
+                                                                    "/usr/lib/jellyfin-content-filter/profanity-words.json",
+                                                                  )),
+                                                  min_intensity: env_parse(
+                                                                   "FILTERD_PROFANITY_MIN_INTENSITY",
+                                                                   1,
+                                                                 ),
+                                                  terms: env_list("FILTERD_PROFANITY_TERMS"),
                                                   patterns:
                                                     env_list("FILTERD_PROFANITY_PATTERNS"),
                                                   case_sensitive:
@@ -60,6 +69,8 @@ async fn main() -> anyhow::Result<()>
                             analysis,
                             env_parse("FILTERD_ANALYSIS_CONCURRENCY", 2),
                             env::var("FILTERD_AUTH_TOKEN").ok().filter(|value| !value.is_empty()));
+  // Requeue orphaned running jobs, collapse duplicate queued rows, and drain the backlog.
+  state.jobs.start_dispatcher();
   let listener =
     UnixListener::bind(&socket_path).with_context(|| format!("bind {}", socket_path.display()))?;
   std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o660))?;

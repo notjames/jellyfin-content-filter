@@ -14,6 +14,7 @@ export class PlaybackDetector extends EventTarget {
   private originalSetHeader = XMLHttpRequest.prototype.setRequestHeader;
   private originalSend = XMLHttpRequest.prototype.send;
   private xhrState = new WeakMap<XMLHttpRequest, { url: string; headers: Headers }>();
+  private currentVideo?: HTMLVideoElement;
 
   start(): void {
     const detector = this;
@@ -60,6 +61,8 @@ export class PlaybackDetector extends EventTarget {
 
   private emitVideo(): void {
     const video = [...document.querySelectorAll("video")].at(-1);
-    if (video) this.dispatchEvent(new CustomEvent<HTMLVideoElement>("video", { detail: video }));
+    if (video === this.currentVideo) return;
+    this.currentVideo = video;
+    this.dispatchEvent(new CustomEvent<HTMLVideoElement | undefined>("video", { detail: video }));
   }
 }

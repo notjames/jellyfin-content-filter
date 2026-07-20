@@ -15,5 +15,6 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.AddSingleton<IDaemonClient, DaemonClient>();
         serviceCollection.AddSingleton<IScheduledTask, LibraryAnalysisTask>();
+        serviceCollection.AddHostedService<LibraryMonitorHostedService>();
     }
 }

@@ -15,10 +15,17 @@ export class DesktopPlaybackScheduler {
   private wantsMute = false;
   private muteGeneration = 0;
   private warnedAboutMute = false;
+  private ownsSubtitles = false;
   private readonly onPosition = (positionMs: number) => this.evaluatePosition(positionMs);
-  private readonly onStopped = () => this.resetPlaybackState();
+  private readonly onStopped = () => {
+    this.resetPlaybackState();
+    this.onPlaybackStopped?.();
+  };
 
-  constructor(private readonly onWarning?: (message: string) => void) {}
+  constructor(
+    private readonly onWarning?: (message: string) => void,
+    private readonly onPlaybackStopped?: () => void
+  ) {}
 
   attach(player: NativePlayer): void {
     if (this.player === player) return;
@@ -45,6 +52,7 @@ export class DesktopPlaybackScheduler {
     this.disconnect(player.canceled, this.onStopped);
     this.disconnect(player.stopped, this.onStopped);
     this.restoreMute();
+    this.restoreSubtitles();
     this.clearTimer();
     this.player = undefined;
   }
@@ -58,6 +66,7 @@ export class DesktopPlaybackScheduler {
     const skips = active.filter((entry) => entry.action === "skip");
     if (skips.length) {
       void this.setFilterMute(false);
+      this.maskSubtitles(true);
       const target = this.skipClosure(Math.max(...skips.map((entry) => entry.end)));
       const wallNow = Date.now();
       if (Math.abs(target - this.lastSeekTarget) > EPSILON_SECONDS || wallNow - this.lastSeekAt > 750) {
@@ -67,7 +76,9 @@ export class DesktopPlaybackScheduler {
       }
       return;
     }
-    void this.setFilterMute(active.some((entry) => entry.action === "mute"));
+    const mute = active.some((entry) => entry.action === "mute");
+    void this.setFilterMute(mute);
+    this.maskSubtitles(mute);
   }
 
   private poll(): void {
@@ -133,9 +144,29 @@ export class DesktopPlaybackScheduler {
     this.ownsMute = false;
   }
 
+  private maskSubtitles(enabled: boolean): void {
+    if (!this.player?.setSubtitleStream) return;
+    if (enabled) {
+      if (this.ownsSubtitles) return;
+      this.player.setSubtitleStream(-1);
+      this.ownsSubtitles = true;
+      return;
+    }
+    this.restoreSubtitles();
+  }
+
+  private restoreSubtitles(): void {
+    if (this.player?.setSubtitleStream && this.ownsSubtitles) {
+      // Re-enable automatic/default subtitle selection after a filtered window.
+      this.player.setSubtitleStream(1);
+    }
+    this.ownsSubtitles = false;
+  }
+
   private resetPlaybackState(): void {
     this.lastSeekTarget = -1;
     this.restoreMute();
+    this.restoreSubtitles();
   }
 
   private connect<T extends unknown[]>(signal: NativeSignal<T> | undefined, callback: (...args: T) => void): void {

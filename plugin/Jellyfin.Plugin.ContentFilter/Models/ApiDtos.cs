@@ -23,7 +23,25 @@ public sealed record BrowserIntervalDto(
 public sealed record BrowserFilterConfigDto(
     [property: JsonPropertyName("viewer")] CategoryActionsDto Viewer,
     [property: JsonPropertyName("title")] CategoryActionsDto Title,
-    [property: JsonPropertyName("intervals")] IReadOnlyList<BrowserIntervalDto> Intervals);
+    [property: JsonPropertyName("intervals")] IReadOnlyList<BrowserIntervalDto> Intervals,
+    [property: JsonPropertyName("filter_status")] string FilterStatus = "missing",
+    [property: JsonPropertyName("problems")] IReadOnlyList<FilterProblemDto>? Problems = null,
+    [property: JsonPropertyName("filters_enabled")] bool FiltersEnabled = true,
+    [property: JsonPropertyName("warning")] string? Warning = null);
+
+/// <summary>A stored analysis problem for administrator investigation.</summary>
+public sealed record FilterProblemDto(
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("message")] string Message);
+
+/// <summary>Persisted analysis status for a library item.</summary>
+public sealed record MediaAnalysisStateDto(
+    [property: JsonPropertyName("media_id")] string MediaId,
+    [property: JsonPropertyName("media_path")] string MediaPath,
+    [property: JsonPropertyName("fingerprint")] string Fingerprint,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("problems")] IReadOnlyList<FilterProblemDto> Problems,
+    [property: JsonPropertyName("analyzed_at_ms")] long AnalyzedAtMilliseconds);
 
 /// <summary>A time range carrying content classifications.</summary>
 public sealed record TimelineSegmentDto(
@@ -139,7 +157,13 @@ public sealed class DaemonDocumentDto
 
 internal sealed record DaemonAnalyzeRequest(
     [property: JsonPropertyName("media_id")] string MediaId,
-    [property: JsonPropertyName("media_path")] string MediaPath);
+    [property: JsonPropertyName("media_path")] string MediaPath,
+    [property: JsonPropertyName("force")] bool Force = false);
+
+/// <summary>Aggregate analysis job counts and recent jobs.</summary>
+public sealed record AnalysisJobsSummaryDto(
+    [property: JsonPropertyName("counts")] IReadOnlyDictionary<string, long> Counts,
+    [property: JsonPropertyName("jobs")] IReadOnlyList<AnalysisStatusDto> Jobs);
 
 internal sealed record DaemonReviewRequest(
     [property: JsonPropertyName("reviewer")] string Reviewer,

@@ -1,4 +1,8 @@
-import { sessionFromPlaybackRequest, type Session } from "../../web/src/api";
+import {
+  sessionFromGlobalApiClient,
+  sessionFromPlaybackRequest,
+  type Session
+} from "../../web/src/api";
 
 export interface DesktopPlaybackTarget {
   itemId: string;
@@ -13,6 +17,8 @@ export class DesktopPlaybackDetector extends EventTarget {
   private readonly originalSetHeader = XMLHttpRequest.prototype.setRequestHeader;
   private readonly originalSend = XMLHttpRequest.prototype.send;
   private readonly xhrState = new WeakMap<XMLHttpRequest, { url: string; headers: Headers }>();
+  private activeItemId?: string;
+  private sawNativePlayback = false;
 
   start(): void {
     const detector = this;
@@ -39,6 +45,7 @@ export class DesktopPlaybackDetector extends EventTarget {
       if (state) detector.inspect(state.url, { headers: state.headers });
       return detector.originalSend.call(this, body);
     };
+    this.pollNativePlayback();
   }
 
   private inspect(input: RequestInfo | URL, init?: RequestInit): void {
@@ -46,9 +53,36 @@ export class DesktopPlaybackDetector extends EventTarget {
     const match = url.pathname.match(PLAYBACK_PATH);
     const session = sessionFromPlaybackRequest(input, init);
     if (match?.[1] && session) {
+      this.activeItemId = decodeURIComponent(match[1]);
       this.dispatchEvent(new CustomEvent<DesktopPlaybackTarget>("playback", {
-        detail: { itemId: decodeURIComponent(match[1]), session }
+        detail: { itemId: this.activeItemId, session }
       }));
     }
+  }
+
+  private pollNativePlayback(): void {
+    const container = document.querySelector(".videoPlayerContainer");
+    if (container) {
+      this.sawNativePlayback = true;
+      const options = window._mpvVideoPlayerInstance?._currentPlayOptions;
+      const itemId = options?.itemId
+        ?? options?.ItemId
+        ?? options?.item?.Id
+        ?? options?.item?.id
+        ?? options?.mediaSource?.ItemId
+        ?? options?.mediaSource?.itemId;
+      const session = sessionFromGlobalApiClient();
+      if (itemId && itemId !== this.activeItemId && session) {
+        this.activeItemId = itemId;
+        this.dispatchEvent(new CustomEvent<DesktopPlaybackTarget>("playback", {
+          detail: { itemId, session }
+        }));
+      }
+    } else if (this.sawNativePlayback) {
+      this.sawNativePlayback = false;
+      this.activeItemId = undefined;
+      this.dispatchEvent(new Event("stopped"));
+    }
+    window.setTimeout(() => this.pollNativePlayback(), 250);
   }
 }

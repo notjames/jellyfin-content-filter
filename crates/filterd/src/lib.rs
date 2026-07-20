@@ -4,16 +4,17 @@ pub mod db;
 use analysis::{AnalysisConfig, JobManager};
 use axum::{
   Json, Router,
-  extract::{Path, Request, State},
+  extract::{Path, Query, Request, State},
   http::{HeaderMap, StatusCode},
   middleware::{Next, from_fn_with_state},
   response::{IntoResponse, Response},
   routing::{get, post},
 };
-use db::{AnalysisJob, Repository, RepositoryError};
+use db::{AnalysisJob, MediaAnalysisState, Repository, RepositoryError};
 use filter_core::{
-  Candidate, CandidateStatus, CategorySettings, Evidence, PlaybackConfig, PlaybackInterval, Policy,
-  PublishedTimeline, ReviewAction, ReviewEdit, apply_policy, media_fingerprint,
+  Candidate, CandidateStatus, CategorySettings, Evidence, FilterDocument, FilterProblem,
+  FilterReadiness, PlaybackConfig, PlaybackInterval, Policy, PublishedTimeline, ReviewAction,
+  ReviewEdit, ViewerAction, apply_policy, media_fingerprint,
 };
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
@@ -46,8 +47,10 @@ pub fn app(state: AppState, max_request_bytes: usize) -> Router
   Router::new().route("/health", get(health))
                .route("/analyze", post(enqueue_analysis))
                .route("/analyze/{id}", get(analysis_status))
+               .route("/jobs", get(list_jobs))
                .route("/media/{media_id}/evidence", get(media_evidence))
                .route("/media/{media_id}/candidates", get(media_candidates))
+               .route("/media/problems", get(list_media_problems))
                .route("/config/{media_id}/{user_id}", get(playback_config))
                .route("/viewer/{user_id}", axum::routing::put(put_viewer_settings))
                .route("/title/{user_id}/{media_id}", axum::routing::put(put_title_settings))
@@ -150,6 +153,28 @@ struct AnalyzeRequest
 {
   media_id: String,
   media_path: PathBuf,
+  #[serde(default)]
+  force: bool,
+}
+
+#[derive(Deserialize)]
+struct JobsQuery
+{
+  status: Option<String>,
+  #[serde(default = "default_jobs_limit")]
+  limit: usize,
+}
+
+fn default_jobs_limit() -> usize
+{
+  100
+}
+
+#[derive(Serialize)]
+struct JobsSummary
+{
+  counts: serde_json::Map<String, serde_json::Value>,
+  jobs: Vec<AnalysisJob>,
 }
 
 async fn enqueue_analysis(State(state): State<AppState>,
@@ -160,8 +185,14 @@ async fn enqueue_analysis(State(state): State<AppState>,
   {
     return Err(ApiError::bad_request("media_id must not be empty"));
   }
-  let job = state.jobs.enqueue(request.media_id.trim(), &request.media_path)?;
-  Ok((StatusCode::ACCEPTED, Json(job)))
+  let job = state.jobs
+                 .enqueue(request.media_id.trim(), &request.media_path, request.force)?;
+  let status = match job.status
+  {
+    db::JobStatus::Queued => StatusCode::ACCEPTED,
+    _ => StatusCode::OK,
+  };
+  Ok((status, Json(job)))
 }
 
 async fn analysis_status(State(state): State<AppState>,
@@ -169,6 +200,20 @@ async fn analysis_status(State(state): State<AppState>,
                          -> Result<Json<AnalysisJob>, ApiError>
 {
   Ok(Json(state.repository.get_job(id)?))
+}
+
+async fn list_jobs(State(state): State<AppState>,
+                   Query(query): Query<JobsQuery>)
+                   -> Result<Json<JobsSummary>, ApiError>
+{
+  let mut counts = serde_json::Map::new();
+  for (status, count) in state.repository.job_counts()?
+  {
+    counts.insert(status, serde_json::json!(count));
+  }
+  let jobs = state.repository
+                  .list_jobs(query.status.as_deref(), query.limit)?;
+  Ok(Json(JobsSummary { counts, jobs }))
 }
 
 async fn media_evidence(State(state): State<AppState>,
@@ -185,6 +230,12 @@ async fn media_candidates(State(state): State<AppState>,
   Ok(Json(state.repository.candidates_for_media(&media_id)?))
 }
 
+async fn list_media_problems(State(state): State<AppState>)
+                             -> Result<Json<Vec<MediaAnalysisState>>, ApiError>
+{
+  Ok(Json(state.repository.list_problem_media()?))
+}
+
 async fn playback_config(State(state): State<AppState>,
                          Path((media_id, user_id)): Path<(String, String)>)
                          -> Result<Json<PlaybackConfig>, ApiError>
@@ -193,19 +244,47 @@ async fn playback_config(State(state): State<AppState>,
   validate_identifier("user_id", &user_id)?;
   let viewer = state.repository.viewer_settings(&user_id)?;
   let title = state.repository.title_settings(&user_id, &media_id)?;
-  let candidates = state.repository.approved_candidates_for_media(&media_id)?;
-  let mut intervals: Vec<_> =
-    candidates.into_iter()
-              .map(|candidate| {
-                PlaybackInterval { start: candidate.interval.start_ms as f64 / 1000.0,
-                                   end: candidate.interval.end_ms as f64 / 1000.0,
-                                   category: candidate.interval.category.as_str().to_owned() }
-              })
-              .collect();
+  let media_state = state.repository.media_state(&media_id)?;
+  let document = media_state.as_ref()
+                            .and_then(|state| FilterDocument::load(FilterDocument::sidecar_path(&state.media_path)).ok());
+  let (filter_status, problems) = match (&document, &media_state)
+  {
+    (Some(document), _) => (document.status, document.problems.clone()),
+    (None, Some(state)) => (state.status, state.problems.clone()),
+    (None, None) => (FilterReadiness::Missing,
+                     vec![FilterProblem { code: "missing_filter".into(),
+                                          message: "No filter.json exists for this title yet.".into() }]),
+  };
+  let viewer_wants_filtering = wants_filtering(&viewer, &title);
+  let warning = if viewer_wants_filtering && filter_status != FilterReadiness::Ready
+                {
+                  Some("Content filtering is unavailable for this title because analysis is incomplete or failed. Playback will continue unfiltered. An administrator should investigate the stored problem report.".into())
+                }
+                else
+                {
+                  None
+                };
+  let filters_enabled = warning.is_none() && filter_status == FilterReadiness::Ready;
+
+  let mut intervals = Vec::new();
+  if filters_enabled
+  {
+    if let Some(document) = document
+    {
+      intervals = document.detections
+                          .into_iter()
+                          .map(|detection| {
+                            PlaybackInterval { start: detection.start_ms as f64 / 1000.0,
+                                               end: detection.end_ms as f64 / 1000.0,
+                                               category: detection.category.as_str().to_owned() }
+                          })
+                          .collect();
+    }
+  }
   if intervals.iter().any(|interval| !interval.is_valid())
   {
     return Err(ApiError { status: StatusCode::INTERNAL_SERVER_ERROR,
-                          message: "stored candidate contains an invalid interval".into() });
+                          message: "stored detection contains an invalid interval".into() });
   }
   intervals.sort_by(|left, right| {
              left.start
@@ -213,7 +292,21 @@ async fn playback_config(State(state): State<AppState>,
                  .then_with(|| left.end.total_cmp(&right.end))
                  .then_with(|| left.category.cmp(&right.category))
            });
-  Ok(Json(PlaybackConfig { viewer, title, intervals }))
+  Ok(Json(PlaybackConfig { viewer,
+                           title,
+                           intervals,
+                           filter_status,
+                           problems,
+                           filters_enabled,
+                           warning }))
+}
+
+fn wants_filtering(viewer: &CategorySettings, title: &CategorySettings) -> bool
+{
+  title.categories
+       .values()
+       .chain(viewer.categories.values())
+       .any(|action| !matches!(action, ViewerAction::Allow))
 }
 
 async fn put_viewer_settings(State(state): State<AppState>,
@@ -396,7 +489,9 @@ mod tests
 {
   use super::*;
   use axum::body::{Body, to_bytes};
-  use filter_core::{Action, Category, Interval, PolicyRule, Severity};
+  use filter_core::{
+    Action, Category, FilterDocument, FilterProblem, FilterReadiness, PolicyRule, Severity,
+  };
   use http::Request as HttpRequest;
   use tower::ServiceExt;
 
@@ -459,24 +554,41 @@ mod tests
   }
 
   #[tokio::test]
-  async fn playback_contract_persists_settings_and_returns_only_approved_intervals()
+  async fn playback_contract_uses_ready_sidecar_detections()
   {
     let dir = tempfile::tempdir().unwrap();
+    let media_path = dir.path().join("movie.mp4");
+    std::fs::write(&media_path, b"fake").unwrap();
     let repository = Repository::open(dir.path().join("api.db")).unwrap();
-    for (status, start_ms) in [(CandidateStatus::Approved, 1250), (CandidateStatus::Pending, 5000)]
-    {
-      repository.insert_candidate(&Candidate { id: Uuid::new_v4(),
-                                               media_id: "movie".into(),
-                                               interval: Interval { start_ms,
-                                                                    end_ms: start_ms + 2000,
-                                                                    action: Action::Skip,
-                                                                    category:
-                                                                      Category::Violence,
-                                                                    severity: Severity::High },
-                                               evidence_ids: vec![],
-                                               status })
-                .unwrap();
-    }
+    let document = FilterDocument {
+      version: FilterDocument::CURRENT_VERSION,
+      media_id: "movie".into(),
+      media_fingerprint: "fp".into(),
+      analyzed_at_ms: 1,
+      status: FilterReadiness::Ready,
+      problems: vec![],
+      detections: vec![filter_core::FilterDetection {
+        id: Uuid::new_v4(),
+        start_ms: 1250,
+        end_ms: 3250,
+        category: Category::Violence,
+        severity: Severity::High,
+        confidence: 1.0,
+        source: "openvino".into(),
+        suggested_action: Action::Skip,
+        details: serde_json::json!({}),
+      }],
+    };
+    document.save(FilterDocument::sidecar_path(&media_path)).unwrap();
+    repository.put_media_state(&db::MediaAnalysisState {
+                  media_id: "movie".into(),
+                  media_path: media_path.clone(),
+                  fingerprint: "fp".into(),
+                  status: FilterReadiness::Ready,
+                  problems: vec![],
+                  analyzed_at_ms: 1,
+                })
+              .unwrap();
     let router = app(AppState::new(repository, AnalysisConfig::default(), 1, None), 4096);
 
     let viewer_response =
@@ -505,17 +617,49 @@ mod tests
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value =
       serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
-    assert_eq!(body,
-               serde_json::json!({
-                 "viewer": {"categories": {"profanity": "mute"}},
-                 "title": {"categories": {"language": "skip"}},
-                 "intervals": [{
-                   "start": 1.25,
-                   "end": 3.25,
-                   "category": "violence"
-                 }]
-               }));
-    assert!(body["intervals"][0].get("action").is_none());
+    assert_eq!(body["viewer"]["categories"]["profanity"], "mute");
+    assert_eq!(body["title"]["categories"]["language"], "skip");
+    assert_eq!(body["filter_status"], "ready");
+    assert_eq!(body["filters_enabled"], true);
+    assert_eq!(body["intervals"][0]["start"], 1.25);
+    assert_eq!(body["intervals"][0]["end"], 3.25);
+    assert_eq!(body["intervals"][0]["category"], "violence");
+  }
+
+  #[tokio::test]
+  async fn playback_disables_filters_when_sidecar_is_partial()
+  {
+    let dir = tempfile::tempdir().unwrap();
+    let media_path = dir.path().join("movie.mp4");
+    std::fs::write(&media_path, b"fake").unwrap();
+    let repository = Repository::open(dir.path().join("api.db")).unwrap();
+    repository.put_media_state(&db::MediaAnalysisState {
+                  media_id: "movie".into(),
+                  media_path,
+                  fingerprint: "fp".into(),
+                  status: FilterReadiness::Partial,
+                  problems: vec![FilterProblem { code: "no_language_source".into(),
+                                                 message: "missing".into() }],
+                  analyzed_at_ms: 1,
+                })
+              .unwrap();
+    let router = app(AppState::new(repository, AnalysisConfig::default(), 1, None), 4096);
+    router.clone()
+          .oneshot(HttpRequest::put("/viewer/user")
+                             .header("content-type", "application/json")
+                             .body(Body::from(r#"{"categories":{"language":"mute"}}"#))
+                             .unwrap())
+          .await
+          .unwrap();
+    let response = router.oneshot(HttpRequest::get("/config/movie/user").body(Body::empty())
+                                                                        .unwrap())
+                         .await
+                         .unwrap();
+    let body: serde_json::Value =
+      serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(body["filters_enabled"], false);
+    assert_eq!(body["intervals"], serde_json::json!([]));
+    assert!(body["warning"].as_str().unwrap().contains("unavailable"));
   }
 
   #[tokio::test]
@@ -540,6 +684,46 @@ mod tests
             .await
             .unwrap();
     assert!(unknown_action.status().is_client_error());
+  }
+
+  #[tokio::test]
+  async fn analyze_skips_when_filter_json_is_current()
+  {
+    let dir = tempfile::tempdir().unwrap();
+    let media_path = dir.path().join("movie.mp4");
+    std::fs::write(&media_path, b"fake-media").unwrap();
+    let fingerprint = media_fingerprint(&media_path).unwrap();
+    let document = FilterDocument { version: FilterDocument::CURRENT_VERSION,
+                                    media_id: "movie".into(),
+                                    media_fingerprint: fingerprint,
+                                    analyzed_at_ms: 1,
+                                    status: FilterReadiness::Ready,
+                                    problems: vec![],
+                                    detections: vec![] };
+    document.save(FilterDocument::sidecar_path(&media_path)).unwrap();
+    let repository = Repository::open(dir.path().join("api.db")).unwrap();
+    let router = app(AppState::new(repository, AnalysisConfig::default(), 1, None), 4096);
+    let response = router.clone().oneshot(HttpRequest::post("/analyze")
+                                             .header("content-type", "application/json")
+                                             .body(Body::from(format!(
+                                               r#"{{"media_id":"movie","media_path":"{}"}}"#,
+                                               media_path.display()
+                                             )))
+                                             .unwrap())
+                         .await
+                         .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+      serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(body["status"], "skipped");
+    assert_eq!(body["error"], "up-to-date filter.json");
+
+    let jobs = router.oneshot(HttpRequest::get("/jobs").body(Body::empty()).unwrap())
+                     .await
+                     .unwrap();
+    let jobs_body: serde_json::Value =
+      serde_json::from_slice(&to_bytes(jobs.into_body(), 4096).await.unwrap()).unwrap();
+    assert!(jobs_body["counts"].as_object().unwrap().is_empty());
   }
 
   #[tokio::test]

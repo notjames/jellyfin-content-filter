@@ -48,3 +48,22 @@ export function sessionFromPlaybackRequest(input: RequestInfo | URL, init?: Requ
   new Headers(init?.headers).forEach((value, key) => headers.set(key, value));
   return { baseUrl: `${url.origin}${normalizeBase(url)}`, headers };
 }
+
+export function sessionFromGlobalApiClient(): Session | null {
+  const client = (window as typeof window & {
+    ApiClient?: {
+      getUrl(path: string): string;
+      accessToken?: () => string | null | undefined;
+    };
+  }).ApiClient;
+  if (!client?.getUrl) return null;
+
+  const endpoint = new URL(client.getUrl("/ContentFilter"), document.baseURI);
+  const headers = new Headers();
+  const token = client.accessToken?.();
+  if (token) headers.set("X-Emby-Token", token);
+  endpoint.pathname = endpoint.pathname.replace(/\/ContentFilter\/?$/i, "").replace(/\/$/, "");
+  endpoint.search = "";
+  endpoint.hash = "";
+  return { baseUrl: `${endpoint.origin}${endpoint.pathname}`, headers };
+}

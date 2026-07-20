@@ -43,12 +43,21 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         };
         yield return new PluginPageInfo
         {
-            Name = "ContentFilterReview",
+            Name = "ContentFilterReviewV2",
             DisplayName = "Content Filter Review",
             EnableInMainMenu = true,
             MenuSection = "server",
             MenuIcon = "fact_check",
             EmbeddedResourcePath = $"{assemblyName}.Web.reviewPage.html",
+        };
+        yield return new PluginPageInfo
+        {
+            Name = "ContentFilterStatus",
+            DisplayName = "Content Filter Status",
+            EnableInMainMenu = true,
+            MenuSection = "server",
+            MenuIcon = "pending_actions",
+            EmbeddedResourcePath = $"{assemblyName}.Web.statusPage.html",
         };
     }
 }

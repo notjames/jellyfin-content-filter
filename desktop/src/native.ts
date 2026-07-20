@@ -8,6 +8,7 @@ export interface NativePlayer {
   seekTo(positionMs: number): void;
   setMuted(muted: boolean): void;
   muted?(callback?: (muted: boolean) => void): boolean | void;
+  setSubtitleStream?(index: number): void;
   positionUpdate?: NativeSignal<[number]>;
   finished?: NativeSignal;
   canceled?: NativeSignal;
@@ -20,6 +21,12 @@ interface DesktopApi {
 
 interface DesktopVideoPlayer {
   isMuted?: () => boolean;
+  _currentPlayOptions?: {
+    itemId?: string;
+    ItemId?: string;
+    item?: { Id?: string; id?: string };
+    mediaSource?: { ItemId?: string; itemId?: string };
+  };
 }
 
 declare global {
@@ -28,14 +35,18 @@ declare global {
     apiPromise?: Promise<DesktopApi>;
     jmpInfo?: { mode?: string };
     jmpNative?: { playerSeek?: (positionMs: number) => void };
+    NativeShell?: unknown;
     _mpvVideoPlayerInstance?: DesktopVideoPlayer;
   }
 }
 
 export function isDesktopClient(): boolean {
   return Boolean(
-    window.jmpInfo
-      && (window.jmpInfo.mode === "desktop" || window.apiPromise || window.api?.player)
+    window.jmpInfo?.mode === "desktop"
+      || window.apiPromise
+      || window.api?.player
+      || window.jmpNative
+      || window.NativeShell
   );
 }
 

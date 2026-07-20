@@ -2,16 +2,32 @@ import type { FilterApi } from "./api";
 import type { Action, FilterConfig } from "./types";
 
 const ACTIONS: Action[] = ["allow", "skip", "mute"];
+const CATEGORY_LABELS: Record<string, string> = {
+  language: "Language",
+  profanity: "Profanity",
+  violence: "Violence",
+  gore: "Gore",
+  sexual_content: "Sexual content",
+  nudity: "Nudity",
+  drugs: "Drugs",
+  alcohol: "Alcohol",
+  hate: "Hate speech",
+  self_harm: "Self-harm",
+  other: "Other"
+};
 
 export class FilterUi {
   private readonly host = document.createElement("div");
   private readonly root = this.host.attachShadow({ mode: "open" });
+  private readonly osdObserver = new MutationObserver(() => this.mountOsdButton());
+  private osdButton?: HTMLButtonElement;
   private config?: FilterConfig;
   private itemId?: string;
   private api?: FilterApi;
 
   constructor(private readonly onConfigChanged?: (config: FilterConfig) => void) {
     this.host.id = "jcf-root";
+    this.host.hidden = true;
     this.root.innerHTML = `
       <style>
         :host{position:fixed;right:16px;bottom:80px;z-index:999999;font:14px system-ui;color:#fff}
@@ -22,21 +38,33 @@ export class FilterUi {
         select{padding:6px;background:#333;color:#fff;border:1px solid #666}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
       </style>
       <div id="warning" role="alert"></div>
-      <button id="open" aria-label="Content filter settings">Content filter</button>
       <dialog><h2>Content filter</h2><p>Choose viewer defaults and optional overrides for this title.</p>
+        <p id="availability"></p>
         <div id="categories"></div><div class="actions"><button id="cancel">Cancel</button><button id="save">Save</button></div>
       </dialog>`;
-    this.root.querySelector("#open")?.addEventListener("click", () => this.open());
     this.root.querySelector("#cancel")?.addEventListener("click", () => this.dialog.close());
     this.root.querySelector("#save")?.addEventListener("click", () => void this.save());
     document.body.append(this.host);
+    this.osdObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   bind(itemId: string, api: FilterApi, config: FilterConfig): void {
     this.itemId = itemId;
     this.api = api;
     this.config = config;
+    this.host.hidden = false;
+    this.mountOsdButton();
     this.warning("");
+  }
+
+  unbind(): void {
+    this.itemId = undefined;
+    this.api = undefined;
+    this.config = undefined;
+    this.host.hidden = true;
+    this.osdButton?.remove();
+    this.warning("");
+    if (this.dialog.open) this.dialog.close();
   }
 
   warning(message: string): void {
@@ -50,6 +78,24 @@ export class FilterUi {
     return this.root.querySelector("dialog") as HTMLDialogElement;
   }
 
+  private mountOsdButton(): void {
+    if (!this.config || this.osdButton?.isConnected) return;
+    const controls = document.querySelector(".videoOsdBottom .buttons");
+    if (!controls) return;
+    const settings = controls.querySelector<HTMLButtonElement>(".btnVideoOsdSettings");
+    if (!settings) return;
+    if (!this.osdButton) {
+      this.osdButton = settings.cloneNode(true) as HTMLButtonElement;
+      this.osdButton.className = "btnContentFilter autoSize";
+      this.osdButton.title = "Content filter";
+      this.osdButton.setAttribute("aria-label", "Content filter settings");
+      const icon = this.osdButton.querySelector(".material-icons");
+      if (icon) icon.textContent = "tune";
+      this.osdButton.addEventListener("click", () => this.open());
+    }
+    controls.insertBefore(this.osdButton, settings);
+  }
+
   private open(): void {
     const container = this.root.querySelector("#categories");
     if (!container || !this.config) {
@@ -57,10 +103,18 @@ export class FilterUi {
       return;
     }
     const categories = new Set([
+      ...Object.keys(CATEGORY_LABELS),
       ...Object.keys(this.config.viewer.categories),
       ...Object.keys(this.config.title?.categories ?? {}),
       ...this.config.intervals.map((entry) => entry.category)
     ]);
+    const availability = this.root.querySelector("#availability");
+    if (availability) {
+      const count = this.config.intervals.length;
+      availability.textContent = count
+        ? `${count} approved filter interval${count === 1 ? "" : "s"} available for this title.`
+        : "No approved filter intervals exist for this title yet. Preferences will be saved, but playback will not change until an administrator analyzes and reviews it.";
+    }
     container.replaceChildren(...[...categories].sort().map((category) => this.row(category)));
     this.dialog.showModal();
   }
@@ -69,7 +123,7 @@ export class FilterUi {
     const label = document.createElement("label");
     label.dataset.category = category;
     const name = document.createElement("span");
-    name.textContent = category;
+    name.textContent = CATEGORY_LABELS[category] ?? category.replaceAll("_", " ");
     label.append(name, this.select("viewer", this.config?.viewer.categories[category] ?? "allow", false));
     label.append(this.select("title", this.config?.title?.categories?.[category] ?? "", true));
     return label;

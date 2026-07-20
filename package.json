@@ -24,6 +24,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "better-profane-words": "^1.0.7",
     "npm": "^12.0.1"
   }
 }

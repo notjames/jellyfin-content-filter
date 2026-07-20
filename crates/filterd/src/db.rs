@@ -1,7 +1,7 @@
 use chrono::Utc;
 use filter_core::{
-  Candidate, CandidateStatus, CategorySettings, Evidence, Policy, PublishedTimeline, Review,
-  ReviewAction, ReviewEdit,
+  Candidate, CandidateStatus, CategorySettings, Evidence, FilterProblem, FilterReadiness, Policy,
+  PublishedTimeline, Review, ReviewAction, ReviewEdit,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -61,6 +61,16 @@ const MIGRATIONS: &[&str] =
         payload TEXT NOT NULL,
         PRIMARY KEY(user_id, media_id)
     );
+    "#,
+    r#"
+    CREATE TABLE media_status (
+        media_id TEXT PRIMARY KEY,
+        media_path TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL,
+        problems TEXT NOT NULL,
+        analyzed_at_ms INTEGER NOT NULL
+    );
     "#];
 
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +96,7 @@ pub enum JobStatus
   Running,
   Complete,
   Failed,
+  Skipped,
 }
 
 impl JobStatus
@@ -98,6 +109,7 @@ impl JobStatus
       Self::Running => "running",
       Self::Complete => "complete",
       Self::Failed => "failed",
+      Self::Skipped => "skipped",
     }
   }
 
@@ -108,6 +120,7 @@ impl JobStatus
       "running" => Self::Running,
       "complete" => Self::Complete,
       "failed" => Self::Failed,
+      "skipped" => Self::Skipped,
       _ => Self::Queued,
     }
   }
@@ -123,6 +136,50 @@ pub struct AnalysisJob
   pub error: Option<String>,
   pub created_at_ms: i64,
   pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaAnalysisState
+{
+  pub media_id: String,
+  pub media_path: PathBuf,
+  pub fingerprint: String,
+  pub status: FilterReadiness,
+  pub problems: Vec<FilterProblem>,
+  pub analyzed_at_ms: i64,
+}
+
+fn map_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AnalysisJob>
+{
+  Ok(AnalysisJob { id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap_or_else(|_| Uuid::nil()),
+                   media_id: row.get(1)?,
+                   media_path: PathBuf::from(row.get::<_, String>(2)?),
+                   status: JobStatus::parse(&row.get::<_, String>(3)?),
+                   error: row.get(4)?,
+                   created_at_ms: row.get(5)?,
+                   updated_at_ms: row.get(6)? })
+}
+
+fn filter_status(status: FilterReadiness) -> &'static str
+{
+  match status
+  {
+    FilterReadiness::Ready => "ready",
+    FilterReadiness::Partial => "partial",
+    FilterReadiness::Failed => "failed",
+    FilterReadiness::Missing => "missing",
+  }
+}
+
+fn parse_filter_status(value: &str) -> FilterReadiness
+{
+  match value
+  {
+    "ready" => FilterReadiness::Ready,
+    "partial" => FilterReadiness::Partial,
+    "failed" => FilterReadiness::Failed,
+    _ => FilterReadiness::Missing,
+  }
 }
 
 #[derive(Clone)]
@@ -197,6 +254,74 @@ impl Repository
     Ok(job)
   }
 
+  pub fn active_job_for_media(&self, media_id: &str) -> Result<Option<AnalysisJob>>
+  {
+    self.connect()?
+        .query_row(
+                   "SELECT id, media_path, status, error, created_at_ms, updated_at_ms
+                 FROM jobs
+                 WHERE media_id=?1 AND status IN ('queued', 'running')
+                 ORDER BY created_at_ms DESC LIMIT 1",
+                   [media_id],
+                   |row| {
+                     Ok(AnalysisJob { id: Uuid::parse_str(&row.get::<_, String>(0)?)
+                                        .unwrap_or_else(|_| Uuid::nil()),
+                                      media_id: media_id.to_owned(),
+                                      media_path: PathBuf::from(row.get::<_, String>(1)?),
+                                      status: JobStatus::parse(&row.get::<_, String>(2)?),
+                                      error: row.get(3)?,
+                                      created_at_ms: row.get(4)?,
+                                      updated_at_ms: row.get(5)? })
+                   },
+        )
+        .optional()
+        .map_err(Into::into)
+  }
+
+  pub fn job_counts(&self) -> Result<Vec<(String, i64)>>
+  {
+    let connection = self.connect()?;
+    let mut statement =
+      connection.prepare("SELECT status, COUNT(*) FROM jobs GROUP BY status ORDER BY status")?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+    let mut values = Vec::new();
+    for row in rows
+    {
+      values.push(row?);
+    }
+    Ok(values)
+  }
+
+  pub fn list_jobs(&self, status: Option<&str>, limit: usize) -> Result<Vec<AnalysisJob>>
+  {
+    let connection = self.connect()?;
+    let limit = limit.clamp(1, 500) as i64;
+    let mut values = Vec::new();
+    if let Some(status) = status
+    {
+      let mut statement = connection.prepare(
+                                              "SELECT id, media_id, media_path, status, error, created_at_ms, updated_at_ms
+             FROM jobs WHERE status=?1 ORDER BY updated_at_ms DESC LIMIT ?2")?;
+      let rows = statement.query_map(params![status, limit], map_job_row)?;
+      for row in rows
+      {
+        values.push(row?);
+      }
+    }
+    else
+    {
+      let mut statement = connection.prepare(
+                                              "SELECT id, media_id, media_path, status, error, created_at_ms, updated_at_ms
+             FROM jobs ORDER BY updated_at_ms DESC LIMIT ?1")?;
+      let rows = statement.query_map([limit], map_job_row)?;
+      for row in rows
+      {
+        values.push(row?);
+      }
+    }
+    Ok(values)
+  }
+
   pub fn get_job(&self, id: Uuid) -> Result<AnalysisJob>
   {
     self.connect()?
@@ -229,6 +354,80 @@ impl Repository
       return Err(RepositoryError::NotFound("job"));
     }
     Ok(())
+  }
+
+  /// Move orphaned `running` rows back to `queued` after a process restart.
+  pub fn requeue_orphaned_running(&self) -> Result<usize>
+  {
+    let changed =
+      self.connect()?
+          .execute("UPDATE jobs SET status='queued', error=NULL, updated_at_ms=?1 \
+                    WHERE status='running'",
+                   params![now_ms()])?;
+    Ok(changed as usize)
+  }
+
+  /// Keep one queued job per media_id (oldest) and mark the rest skipped.
+  pub fn collapse_duplicate_queued(&self) -> Result<usize>
+  {
+    let changed = self.connect()?.execute(
+                                          "UPDATE jobs
+             SET status='skipped',
+                 error='duplicate queued job',
+                 updated_at_ms=?1
+             WHERE status='queued'
+               AND rowid NOT IN (
+                 SELECT MIN(rowid)
+                 FROM jobs
+                 WHERE status='queued'
+                 GROUP BY media_id
+               )",
+                                          params![now_ms()],
+    )?;
+    Ok(changed as usize)
+  }
+
+  pub fn has_queued_jobs(&self) -> Result<bool>
+  {
+    let exists: bool =
+      self.connect()?
+          .query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE status='queued')",
+                     [],
+                     |row| row.get(0))?;
+    Ok(exists)
+  }
+
+  /// Atomically claim the next queued job (FIFO) and mark it running.
+  pub fn claim_next_queued(&self) -> Result<Option<AnalysisJob>>
+  {
+    let mut connection = self.connect()?;
+    let transaction = connection.transaction()?;
+    let job = transaction.query_row(
+                                     "SELECT id, media_id, media_path, status, error, \
+                                      created_at_ms, updated_at_ms
+             FROM jobs
+             WHERE status='queued'
+             ORDER BY created_at_ms ASC, rowid ASC
+             LIMIT 1",
+                                     [],
+                                     map_job_row,
+    )
+                            .optional()?;
+    let Some(mut job) = job
+    else
+    {
+      transaction.commit()?;
+      return Ok(None);
+    };
+    let updated_at = now_ms();
+    transaction.execute("UPDATE jobs SET status='running', error=NULL, updated_at_ms=?2 \
+                         WHERE id=?1 AND status='queued'",
+                        params![job.id.to_string(), updated_at])?;
+    transaction.commit()?;
+    job.status = JobStatus::Running;
+    job.updated_at_ms = updated_at;
+    job.error = None;
+    Ok(Some(job))
   }
 
   pub fn insert_evidence(&self, evidence: &Evidence) -> Result<()>
@@ -275,6 +474,86 @@ impl Repository
                        "SELECT payload FROM candidates
                         WHERE media_id=?1 AND status='approved' ORDER BY id",
                        media_id)
+  }
+
+  pub fn put_media_state(&self, state: &MediaAnalysisState) -> Result<()>
+  {
+    self.connect()?.execute(
+                             "INSERT INTO media_status(media_id, media_path, fingerprint, status, problems, analyzed_at_ms)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(media_id) DO UPDATE SET
+               media_path=excluded.media_path,
+               fingerprint=excluded.fingerprint,
+               status=excluded.status,
+               problems=excluded.problems,
+               analyzed_at_ms=excluded.analyzed_at_ms",
+                             params![
+      state.media_id,
+      state.media_path.to_string_lossy(),
+      state.fingerprint,
+      filter_status(state.status),
+      serde_json::to_string(&state.problems)?,
+      state.analyzed_at_ms
+    ],
+    )?;
+    Ok(())
+  }
+
+  pub fn media_state(&self, media_id: &str) -> Result<Option<MediaAnalysisState>>
+  {
+    self.connect()?
+        .query_row(
+                   "SELECT media_path, fingerprint, status, problems, analyzed_at_ms
+                 FROM media_status WHERE media_id=?1",
+                   [media_id],
+                   |row| {
+                     Ok((row.get::<_, String>(0)?,
+                         row.get::<_, String>(1)?,
+                         row.get::<_, String>(2)?,
+                         row.get::<_, String>(3)?,
+                         row.get::<_, i64>(4)?))
+                   },
+        )
+        .optional()?
+        .map(|(media_path, fingerprint, status, problems, analyzed_at_ms)| {
+          Ok(MediaAnalysisState { media_id: media_id.to_owned(),
+                                  media_path: PathBuf::from(media_path),
+                                  fingerprint,
+                                  status: parse_filter_status(&status),
+                                  problems: serde_json::from_str(&problems)?,
+                                  analyzed_at_ms })
+        })
+        .transpose()
+  }
+
+  pub fn list_problem_media(&self) -> Result<Vec<MediaAnalysisState>>
+  {
+    let connection = self.connect()?;
+    let mut statement = connection.prepare(
+                                            "SELECT media_id, media_path, fingerprint, status, problems, analyzed_at_ms
+             FROM media_status
+             WHERE status IN ('partial', 'failed', 'missing')
+             ORDER BY analyzed_at_ms DESC")?;
+    let rows = statement.query_map([], |row| {
+                          Ok((row.get::<_, String>(0)?,
+                              row.get::<_, String>(1)?,
+                              row.get::<_, String>(2)?,
+                              row.get::<_, String>(3)?,
+                              row.get::<_, String>(4)?,
+                              row.get::<_, i64>(5)?))
+                        })?;
+    let mut values = Vec::new();
+    for row in rows
+    {
+      let (media_id, media_path, fingerprint, status, problems, analyzed_at_ms) = row?;
+      values.push(MediaAnalysisState { media_id,
+                                       media_path: PathBuf::from(media_path),
+                                       fingerprint,
+                                       status: parse_filter_status(&status),
+                                       problems: serde_json::from_str(&problems)?,
+                                       analyzed_at_ms });
+    }
+    Ok(values)
   }
 
   pub fn put_viewer_settings(&self, user_id: &str, settings: &CategorySettings) -> Result<()>
@@ -545,5 +824,34 @@ mod tests
     assert_eq!(reopened.viewer_settings("user").unwrap(), viewer);
     assert_eq!(reopened.title_settings("user", "movie").unwrap(), title);
     assert_eq!(reopened.viewer_settings("new-user").unwrap(), CategorySettings::default());
+  }
+
+  #[test]
+  fn requeues_orphaned_running_and_collapses_duplicate_queued()
+  {
+    let dir = tempfile::tempdir().unwrap();
+    let repository = Repository::open(dir.path().join("filter.db")).unwrap();
+    let first = repository.create_job("movie", Path::new("/media/a.mp4")).unwrap();
+    let _second = repository.create_job("movie", Path::new("/media/a.mp4")).unwrap();
+    let other = repository.create_job("other", Path::new("/media/b.mp4")).unwrap();
+    repository.update_job(other.id, JobStatus::Running, None).unwrap();
+
+    assert_eq!(repository.requeue_orphaned_running().unwrap(), 1);
+    assert_eq!(repository.collapse_duplicate_queued().unwrap(), 1);
+
+    let counts: std::collections::BTreeMap<_, _> =
+      repository.job_counts().unwrap().into_iter().collect();
+    assert_eq!(counts.get("queued").copied().unwrap_or(0), 2);
+    assert_eq!(counts.get("skipped").copied().unwrap_or(0), 1);
+    assert_eq!(counts.get("running").copied().unwrap_or(0), 0);
+
+    let claimed = repository.claim_next_queued().unwrap().unwrap();
+    assert_eq!(claimed.id, first.id);
+    assert_eq!(claimed.status, JobStatus::Running);
+    assert!(repository.has_queued_jobs().unwrap());
+    let claimed_other = repository.claim_next_queued().unwrap().unwrap();
+    assert_eq!(claimed_other.media_id, "other");
+    assert!(!repository.has_queued_jobs().unwrap());
+    assert!(repository.claim_next_queued().unwrap().is_none());
   }
 }

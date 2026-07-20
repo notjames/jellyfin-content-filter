@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Content Filter Status</title>
+</head>
+<body>
+<div id="ContentFilterStatusPage" data-role="page" class="page type-interior"
+     data-require="emby-button,emby-select">
+    <div data-role="content">
+        <div class="content-primary">
+            <h1>Content Filter Status</h1>
+            <p>Live analysis queue, recent jobs, and titles with stored problems.</p>
+            <div class="verticalSection">
+                <h2 class="sectionTitle">Job counts</h2>
+                <div id="JobCounts"></div>
+            </div>
+            <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="JobStatusFilter">Job status filter</label>
+                <select id="JobStatusFilter" is="emby-select">
+                    <option value="">all recent</option>
+                    <option value="queued">queued</option>
+                    <option value="running">running</option>
+                    <option value="complete">complete</option>
+                    <option value="failed">failed</option>
+                    <option value="skipped">skipped</option>
+                </select>
+            </div>
+            <button id="RefreshStatus" is="emby-button" class="raised button-submit">Refresh</button>
+            <div class="verticalSection">
+                <h2 class="sectionTitle">Recent jobs</h2>
+                <div id="JobList"></div>
+            </div>
+            <div class="verticalSection">
+                <h2 class="sectionTitle">Problem titles</h2>
+                <div id="ProblemList"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        (() => {
+            const page = document.querySelector('#ContentFilterStatusPage');
+            const countsEl = page.querySelector('#JobCounts');
+            const jobsEl = page.querySelector('#JobList');
+            const problemsEl = page.querySelector('#ProblemList');
+            const statusFilter = page.querySelector('#JobStatusFilter');
+
+            const value = (object, name) =>
+                object?.[name] ?? object?.[name.charAt(0).toLowerCase() + name.slice(1)];
+
+            function node(tag, text, className) {
+                const result = document.createElement(tag);
+                if (className) result.className = className;
+                if (text !== undefined && text !== null) result.textContent = String(text);
+                return result;
+            }
+
+            function formatTime(ms) {
+                const n = Number(ms);
+                if (!Number.isFinite(n) || n <= 0) return '-';
+                return new Date(n).toLocaleString();
+            }
+
+            function shortPath(path) {
+                const text = String(path || '');
+                if (text.length <= 80) return text;
+                return '...' + text.slice(-77);
+            }
+
+            async function api(path) {
+                const response = await ApiClient.ajax({
+                    type: 'GET',
+                    url: ApiClient.getUrl(path),
+                    dataType: 'json'
+                });
+                return response;
+            }
+
+            function renderCounts(counts) {
+                countsEl.replaceChildren();
+                const map = counts || {};
+                const keys = Object.keys(map).sort();
+                if (!keys.length) {
+                    countsEl.append(node('p', 'No jobs recorded yet.'));
+                    return;
+                }
+                const list = node('ul');
+                keys.forEach((key) => {
+                    list.append(node('li', key + ': ' + map[key]));
+                });
+                countsEl.append(list);
+            }
+
+            function renderJobs(jobs) {
+                jobsEl.replaceChildren();
+                const items = Array.isArray(jobs) ? jobs : [];
+                if (!items.length) {
+                    jobsEl.append(node('p', 'No jobs match this filter.'));
+                    return;
+                }
+                const table = node('table', null, 'detailTable');
+                const head = node('tr');
+                ['Status', 'Updated', 'Media ID', 'Path', 'Error'].forEach((label) => {
+                    head.append(node('th', label));
+                });
+                table.append(head);
+                items.forEach((job) => {
+                    const row = node('tr');
+                    row.append(node('td', value(job, 'Status') || value(job, 'status') || '-'));
+                    row.append(node('td', formatTime(value(job, 'UpdatedAtMilliseconds') || value(job, 'updated_at_ms'))));
+                    row.append(node('td', value(job, 'MediaId') || value(job, 'media_id') || '-'));
+                    row.append(node('td', shortPath(value(job, 'MediaPath') || value(job, 'media_path'))));
+                    row.append(node('td', value(job, 'Error') || value(job, 'error') || ''));
+                    table.append(row);
+                });
+                jobsEl.append(table);
+            }
+
+            function renderProblems(problems) {
+                problemsEl.replaceChildren();
+                const items = Array.isArray(problems) ? problems : [];
+                if (!items.length) {
+                    problemsEl.append(node('p', 'No problem titles stored.'));
+                    return;
+                }
+                items.forEach((item) => {
+                    const block = node('div', null, 'verticalSection');
+                    block.append(node('h3', (value(item, 'Status') || value(item, 'status') || 'unknown')
+                        + ' — ' + shortPath(value(item, 'MediaPath') || value(item, 'media_path'))));
+                    block.append(node('p', 'Media ID: ' + (value(item, 'MediaId') || value(item, 'media_id') || '-')));
+                    const problemList = node('ul');
+                    const entries = value(item, 'Problems') || value(item, 'problems') || [];
+                    (Array.isArray(entries) ? entries : []).forEach((problem) => {
+                        problemList.append(node(
+                            'li',
+                            (value(problem, 'Code') || value(problem, 'code') || 'problem')
+                                + ': '
+                                + (value(problem, 'Message') || value(problem, 'message') || '')
+                        ));
+                    });
+                    block.append(problemList);
+                    problemsEl.append(block);
+                });
+            }
+
+            async function refresh() {
+                countsEl.replaceChildren(node('p', 'Loading…'));
+                jobsEl.replaceChildren();
+                problemsEl.replaceChildren();
+                const status = statusFilter.value;
+                let jobsPath = 'ContentFilter/jobs?limit=100';
+                if (status) jobsPath += '&status=' + encodeURIComponent(status);
+                const [summary, problems] = await Promise.all([
+                    api(jobsPath),
+                    api('ContentFilter/problems')
+                ]);
+                renderCounts(value(summary, 'Counts') || value(summary, 'counts'));
+                renderJobs(value(summary, 'Jobs') || value(summary, 'jobs'));
+                renderProblems(problems);
+            }
+
+            page.querySelector('#RefreshStatus').addEventListener('click', () => {
+                refresh().catch((error) => {
+                    countsEl.replaceChildren(node('p', String(error)));
+                });
+            });
+
+            page.addEventListener('pageshow', () => {
+                refresh().catch((error) => {
+                    countsEl.replaceChildren(node('p', String(error)));
+                });
+            });
+        })();
+    </script>
+</div>
+</body>
+</html>

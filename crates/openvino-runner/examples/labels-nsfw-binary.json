@@ -1,0 +1,17 @@
+{
+  "layout": "nchw",
+  "input_height": 224,
+  "input_width": 224,
+  "scale": 255.0,
+  "mean": [0.485, 0.456, 0.406],
+  "std": [0.229, 0.224, 0.225],
+  "classes": [
+    {
+      "index": 1,
+      "label": "nsfw",
+      "category": "nudity",
+      "severity": "high",
+      "min_confidence": 0.5
+    }
+  ]
+}

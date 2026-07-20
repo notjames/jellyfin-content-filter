@@ -11,7 +11,7 @@ if [ -z "$DESTDIR" ] && [ "$(id -u)" -ne 0 ]; then
   echo "install.sh must run as root (or set DESTDIR for staging)." >&2
   exit 1
 fi
-for file in target/release/filterd web/dist/jellyfin-content-filter.js desktop/dist/jellyfin-content-filter-desktop.js; do
+for file in target/release/filterd target/release/openvino-runner web/dist/jellyfin-content-filter.js desktop/dist/jellyfin-content-filter-desktop.js; do
   if [ ! -f "$file" ]; then
     echo "Missing $file; build release artifacts first." >&2
     exit 1
@@ -20,6 +20,16 @@ done
 
 install -d -m 0755 "$ROOT/lib/jellyfin-content-filter" "$ROOT/share/jellyfin-content-filter"
 install -m 0755 target/release/filterd "$ROOT/lib/jellyfin-content-filter/filterd"
+install -m 0755 target/release/openvino-runner "$ROOT/lib/jellyfin-content-filter/openvino-runner"
+if [ -f packaging/data/profanity-words.json ]; then
+  install -m 0644 packaging/data/profanity-words.json \
+    "$ROOT/lib/jellyfin-content-filter/profanity-words.json"
+fi
+if [ -f crates/openvino-runner/examples/labels-nsfw-binary.json ]; then
+  install -d -m 0750 "$STATE/models"
+  install -m 0644 crates/openvino-runner/examples/labels-nsfw-binary.json \
+    "$STATE/models/labels-nsfw-binary.json"
+fi
 install -m 0644 web/dist/jellyfin-content-filter.js "$ROOT/share/jellyfin-content-filter/"
 install -m 0644 desktop/dist/jellyfin-content-filter-desktop.js "$ROOT/share/jellyfin-content-filter/"
 install -d -m 0750 "$ETC/jellyfin-content-filter" "$STATE"

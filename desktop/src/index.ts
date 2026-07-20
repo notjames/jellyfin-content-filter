@@ -12,33 +12,46 @@ class DesktopContentFilterClient {
   private generation = 0;
 
   constructor() {
-    this.scheduler = new DesktopPlaybackScheduler((message) => this.ui.warning(message));
+    this.scheduler = new DesktopPlaybackScheduler(
+      (message) => this.ui.warning(message),
+      () => this.deactivate()
+    );
     this.ui = new FilterUi((config) => this.scheduler.setIntervals(resolveIntervals(config)));
   }
 
   async start(): Promise<void> {
-    const player = await resolveNativePlayer();
-    this.scheduler.attach(player);
     this.detector.addEventListener("playback", (event) => {
       void this.load((event as CustomEvent<DesktopPlaybackTarget>).detail);
     });
+    this.detector.addEventListener("stopped", () => this.deactivate());
     this.detector.start();
+    const player = await resolveNativePlayer();
+    this.scheduler.attach(player);
   }
 
   private async load(target: DesktopPlaybackTarget): Promise<void> {
     const generation = ++this.generation;
     const api = new FilterApi(target.session);
     this.scheduler.setIntervals([]);
+    this.ui.unbind();
     try {
       const config = await api.getConfig(target.itemId);
       if (generation !== this.generation) return;
       this.scheduler.setIntervals(resolveIntervals(config));
       this.ui.bind(target.itemId, api, config);
+      if (config.warning) this.ui.warning(config.warning);
     } catch (error) {
       if (generation !== this.generation) return;
       this.scheduler.setIntervals([]);
-      this.ui.warning(`Content filter could not load (${String(error)}). Playback is continuing unfiltered.`);
+      this.ui.unbind();
+      console.warn(`Content filter could not load (${String(error)}). Playback is continuing unfiltered.`);
     }
+  }
+
+  private deactivate(): void {
+    this.generation++;
+    this.scheduler.setIntervals([]);
+    this.ui.unbind();
   }
 }
 

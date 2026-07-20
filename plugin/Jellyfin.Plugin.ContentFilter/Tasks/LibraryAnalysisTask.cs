@@ -1,3 +1,4 @@
+using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.ContentFilter.Models;
 using Jellyfin.Plugin.ContentFilter.Services;
 using MediaBrowser.Controller.Entities;
@@ -71,6 +72,7 @@ public sealed class LibraryAnalysisTask : IScheduledTask
         {
             Recursive = true,
             IsVirtualItem = false,
+            IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode],
         }).Where(item => !item.IsFolder && !string.IsNullOrWhiteSpace(item.Path)).ToArray();
 
         for (var index = 0; index < items.Length; index++)
@@ -80,7 +82,7 @@ public sealed class LibraryAnalysisTask : IScheduledTask
             await _daemon.SendAsync<AnalysisEnqueueDto>(
                 HttpMethod.Post,
                 "/analyze",
-                new DaemonAnalyzeRequest(item.Id.ToString("N"), item.Path),
+                new DaemonAnalyzeRequest(item.Id.ToString("N"), item.Path, Force: false),
                 cancellationToken).ConfigureAwait(false);
             progress.Report(((index + 1D) / items.Length) * 100D);
         }

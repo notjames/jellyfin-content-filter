@@ -126,7 +126,7 @@ public sealed class BrowserControllerTests
     }
 
     [Fact]
-    public async Task ReviewEvidenceChecksVisibilityAndUsesMediaEvidencePath()
+    public async Task ReviewEvidenceUsesMediaEvidencePath()
     {
         var itemId = Guid.NewGuid();
         var userId = Guid.NewGuid();
@@ -138,13 +138,12 @@ public sealed class BrowserControllerTests
                 null,
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(expected);
-        var library = VisibleItemLibrary(itemId, userId);
+        var library = new Mock<ILibraryManager>(MockBehavior.Strict);
         var controller = CreateController(daemon.Object, library.Object, userId);
 
         var result = await controller.GetReviewEvidence(itemId, CancellationToken.None);
 
         Assert.Same(expected, result.Value);
-        library.Verify(manager => manager.GetItemById<BaseItem>(itemId, userId), Times.Once);
         daemon.VerifyAll();
     }
 
@@ -152,7 +151,11 @@ public sealed class BrowserControllerTests
         => new(
             new CategoryActionsDto(new Dictionary<string, string>()),
             new CategoryActionsDto(new Dictionary<string, string>()),
-            Array.Empty<BrowserIntervalDto>());
+            Array.Empty<BrowserIntervalDto>(),
+            "ready",
+            Array.Empty<FilterProblemDto>(),
+            true,
+            null);
 
     private static Mock<ILibraryManager> VisibleItemLibrary(Guid itemId, Guid userId)
     {

@@ -26,6 +26,8 @@ public sealed class ContractTests
     [Theory]
     [InlineData(nameof(ContentFilterController.EnqueueAnalysis))]
     [InlineData(nameof(ContentFilterController.GetAnalysisStatus))]
+    [InlineData(nameof(ContentFilterController.GetAnalysisJobs))]
+    [InlineData(nameof(ContentFilterController.GetAnalysisProblems))]
     [InlineData(nameof(ContentFilterController.GetReviewCandidates))]
     [InlineData(nameof(ContentFilterController.GetReviewEvidence))]
     [InlineData(nameof(ContentFilterController.ReviewCandidate))]
@@ -71,7 +73,8 @@ public sealed class ContractTests
             "{\"viewer\":{\"categories\":{\"violence\":\"mute\"}},"
             + "\"title\":{\"categories\":{\"language\":\"skip\"}},"
             + "\"intervals\":[{\"start\":1.25,\"end\":2.5,\"category\":\"violence\"},"
-            + "{\"start\":3,\"end\":4,\"category\":\"language\",\"action\":\"mute\"}]}",
+            + "{\"start\":3,\"end\":4,\"category\":\"language\",\"action\":\"mute\"}],"
+            + "\"filter_status\":\"missing\",\"problems\":null,\"filters_enabled\":true,\"warning\":null}",
             json);
     }
 

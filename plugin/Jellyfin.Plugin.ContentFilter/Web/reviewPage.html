@@ -70,18 +70,20 @@
                 const score = rawScore ?? confidence;
                 block.append(node(
                     'h4',
-                    `${value(evidence, 'Source')} · ${value(evidence, 'Category')} / ${value(evidence, 'Severity')}`));
+                    value(evidence, 'Source') + ' · ' + value(evidence, 'Category')
+                        + ' / ' + value(evidence, 'Severity')));
                 block.append(node(
                     'p',
-                    `${value(evidence, 'StartMilliseconds')}–${value(evidence, 'EndMilliseconds')} ms`
-                    + (score === null || score === undefined ? '' : ` · score ${score}`)));
+                    value(evidence, 'StartMilliseconds') + '–'
+                        + value(evidence, 'EndMilliseconds') + ' ms'
+                        + (score === null || score === undefined ? '' : ' · score ' + score)));
 
                 const details = value(evidence, 'Details');
                 if (details && typeof details === 'object') {
                     const transcript = details.transcript ?? details.text ?? details.transcription;
                     const model = details.model ?? details.model_name ?? details.modelName;
-                    if (transcript !== undefined) block.append(node('p', `Transcript: ${transcript}`));
-                    if (model !== undefined) block.append(node('p', `Model: ${model}`));
+                    if (transcript !== undefined) block.append(node('p', 'Transcript: ' + transcript));
+                    if (model !== undefined) block.append(node('p', 'Model: ' + model));
                     const raw = node('pre');
                     raw.textContent = JSON.stringify(details, null, 2);
                     block.append(raw);
@@ -98,8 +100,8 @@
                 card.dataset.id = candidateId;
                 card.append(node(
                     'h3',
-                    `${value(interval, 'Category')} · ${value(candidate, 'Status')}`));
-                card.append(node('p', `Item ${value(candidate, 'MediaId')}`));
+                    value(interval, 'Category') + ' · ' + value(candidate, 'Status')));
+                card.append(node('p', 'Item ' + value(candidate, 'MediaId')));
 
                 const start = labeledInput(
                     'Start (ms)',
@@ -162,11 +164,11 @@
                     const encodedItem = encodeURIComponent(itemId);
                     const [candidates, evidence] = await Promise.all([
                         ApiClient.ajax({
-                            url: ApiClient.getUrl(`/ContentFilter/review/${encodedItem}`),
+                            url: ApiClient.getUrl('/ContentFilter/review/' + encodedItem),
                             dataType: 'json'
                         }),
                         ApiClient.ajax({
-                            url: ApiClient.getUrl(`/ContentFilter/review/${encodedItem}/evidence`),
+                            url: ApiClient.getUrl('/ContentFilter/review/' + encodedItem + '/evidence'),
                             dataType: 'json'
                         })
                     ]);
@@ -176,7 +178,13 @@
                         ? candidates.map(candidate => candidateNode(candidate, evidenceById))
                         : [node('p', 'No candidates are waiting for review.')]));
                 } catch (error) {
-                    list.replaceChildren(node('p', `Unable to load review data: ${error.message ?? error}`));
+                    const detail = error && typeof error === 'object'
+                        ? error.responseText
+                            || error.statusText
+                            || error.message
+                            || (error.status ? 'HTTP ' + error.status : JSON.stringify(error))
+                        : String(error);
+                    list.replaceChildren(node('p', 'Unable to load review data: ' + detail));
                 } finally {
                     Dashboard.hideLoadingMsg();
                 }
@@ -209,7 +217,9 @@
                 try {
                     await ApiClient.ajax({
                         url: ApiClient.getUrl(
-                            `/ContentFilter/review/${encodeURIComponent(page.querySelector('#ReviewItemId').value.trim())}/${candidate.dataset.id}`),
+                            '/ContentFilter/review/'
+                                + encodeURIComponent(page.querySelector('#ReviewItemId').value.trim())
+                                + '/' + candidate.dataset.id),
                         type: 'POST',
                         contentType: 'application/json',
                         data: JSON.stringify(request)

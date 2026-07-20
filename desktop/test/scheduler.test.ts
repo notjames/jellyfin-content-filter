@@ -55,4 +55,16 @@ describe("DesktopPlaybackScheduler", () => {
     expect(native.mutes).toEqual([true, false]);
     scheduler.detach();
   });
+
+  it("reports native playback completion", () => {
+    const native = player();
+    const stopped = vi.fn();
+    const scheduler = new DesktopPlaybackScheduler(undefined, stopped);
+    scheduler.attach(native);
+
+    (native.finished as Signal).emit();
+
+    expect(stopped).toHaveBeenCalledOnce();
+    scheduler.detach();
+  });
 });

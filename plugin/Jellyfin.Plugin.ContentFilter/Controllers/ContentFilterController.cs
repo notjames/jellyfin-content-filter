@@ -202,7 +202,7 @@ public sealed class ContentFilterController : ControllerBase
             return Unauthorized();
         }
 
-        var item = _libraryManager.GetItemById<BaseItem>(request.ItemId, userId);
+        var item = _libraryManager.GetItemById<BaseItem>(request.ItemId);
         if (item is null)
         {
             return NotFound();
@@ -216,7 +216,10 @@ public sealed class ContentFilterController : ControllerBase
         return await SendAsync<AnalysisEnqueueDto>(
             HttpMethod.Post,
             "/analyze",
-            new DaemonAnalyzeRequest(request.ItemId.ToString("N", CultureInfo.InvariantCulture), item.Path),
+            new DaemonAnalyzeRequest(
+                request.ItemId.ToString("N", CultureInfo.InvariantCulture),
+                item.Path,
+                request.Force),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -232,6 +235,34 @@ public sealed class ContentFilterController : ControllerBase
             null,
             cancellationToken);
 
+    /// <summary>Lists recent analysis jobs and per-status counts.</summary>
+    [HttpGet("jobs")]
+    [Authorize(Roles = AdministratorRole)]
+    public Task<ActionResult<AnalysisJobsSummaryDto>> GetAnalysisJobs(
+        [FromQuery] string? status,
+        [FromQuery] int limit = 100,
+        CancellationToken cancellationToken = default)
+    {
+        var path = $"/jobs?limit={Math.Clamp(limit, 1, 500)}";
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            path += $"&status={Uri.EscapeDataString(status)}";
+        }
+
+        return SendAsync<AnalysisJobsSummaryDto>(HttpMethod.Get, path, null, cancellationToken);
+    }
+
+    /// <summary>Lists analysis problems for administrator investigation.</summary>
+    [HttpGet("problems")]
+    [Authorize(Roles = AdministratorRole)]
+    public Task<ActionResult<IReadOnlyList<MediaAnalysisStateDto>>> GetAnalysisProblems(
+        CancellationToken cancellationToken)
+        => SendAsync<IReadOnlyList<MediaAnalysisStateDto>>(
+            HttpMethod.Get,
+            "/media/problems",
+            null,
+            cancellationToken);
+
     /// <summary>Lists machine-generated candidates for a visible item.</summary>
     [HttpGet("review/{itemId:guid}")]
     [Authorize(Roles = AdministratorRole)]
@@ -242,11 +273,6 @@ public sealed class ContentFilterController : ControllerBase
         if (!TryGetCurrentUserId(out var userId))
         {
             return Unauthorized();
-        }
-
-        if (_libraryManager.GetItemById<BaseItem>(itemId, userId) is null)
-        {
-            return NotFound();
         }
 
         return await SendAsync<IReadOnlyList<ReviewCandidateDto>>(
@@ -268,11 +294,6 @@ public sealed class ContentFilterController : ControllerBase
             return Unauthorized();
         }
 
-        if (_libraryManager.GetItemById<BaseItem>(itemId, userId) is null)
-        {
-            return NotFound();
-        }
-
         return await SendAsync<IReadOnlyList<EvidenceDto>>(
             HttpMethod.Get,
             $"/media/{itemId:N}/evidence",
@@ -292,11 +313,6 @@ public sealed class ContentFilterController : ControllerBase
         if (!TryGetCurrentUserId(out var userId))
         {
             return Task.FromResult<ActionResult<ReviewCandidateDto>>(Unauthorized());
-        }
-
-        if (_libraryManager.GetItemById<BaseItem>(itemId, userId) is null)
-        {
-            return Task.FromResult<ActionResult<ReviewCandidateDto>>(NotFound());
         }
 
         var decision = request.Decision.Trim().ToLowerInvariant();

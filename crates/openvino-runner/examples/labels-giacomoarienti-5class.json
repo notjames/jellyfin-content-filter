@@ -1,0 +1,32 @@
+{
+  "layout": "nchw",
+  "input_height": 224,
+  "input_width": 224,
+  "scale": 255.0,
+  "mean": [0.5, 0.5, 0.5],
+  "std": [0.5, 0.5, 0.5],
+  "softmax": true,
+  "classes": [
+    {
+      "index": 1,
+      "label": "hentai",
+      "category": "nudity",
+      "severity": "high",
+      "min_confidence": 0.45
+    },
+    {
+      "index": 3,
+      "label": "porn",
+      "category": "nudity",
+      "severity": "critical",
+      "min_confidence": 0.4
+    },
+    {
+      "index": 4,
+      "label": "sexy",
+      "category": "sexual_content",
+      "severity": "medium",
+      "min_confidence": 0.5
+    }
+  ]
+}

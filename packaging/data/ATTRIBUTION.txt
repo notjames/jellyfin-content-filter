@@ -1,0 +1,2 @@
+profanity-words.json is copied from better-profane-words:
+https://github.com/awdev1/better-profane-words (GPL-3.0-only)

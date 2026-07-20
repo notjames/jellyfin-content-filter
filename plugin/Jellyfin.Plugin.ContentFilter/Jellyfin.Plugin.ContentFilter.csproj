@@ -20,5 +20,6 @@
   <ItemGroup>
     <EmbeddedResource Include="Web\configPage.html" />
     <EmbeddedResource Include="Web\reviewPage.html" />
+    <EmbeddedResource Include="Web\statusPage.html" />
   </ItemGroup>
 </Project>

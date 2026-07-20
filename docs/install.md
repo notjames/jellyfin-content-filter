@@ -37,7 +37,8 @@ For a system installation, run `packaging/scripts/install.sh` as root yourself. 
 3. Install the resulting plugin ZIP using your server's supported plugin workflow, then configure the same token and `/run/jellyfin-content-filter/filterd.sock` in its dashboard page.
 4. Run `systemd-sysusers` and `systemd-tmpfiles --create`.
 5. Review the systemd sandbox for local requirements.
-6. Enable and start `jellyfin-content-filter.service`.
+6. Enable and start `jellyfin-content-filter.service`. The unit must run as the Jellyfin library owner (`User=jellyfin`) with `ReadWritePaths` covering media mounts (default `/nas`); otherwise sidecar writes fail with `Read-only file system`.
+7. Open **Dashboard → Content Filter Status** to watch job counts, recent failures, and problem titles.
 
 ## Release artifacts
 

@@ -3,6 +3,7 @@ web/dist/
 desktop/dist/
 target/
 dist/
+models/
 playwright-report/
 test-results/
 packaging/catalog/manifest.json

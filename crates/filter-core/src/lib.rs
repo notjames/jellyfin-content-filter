@@ -128,12 +128,99 @@ impl PlaybackInterval
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterReadiness
+{
+  Ready,
+  Partial,
+  Failed,
+  Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterProblem
+{
+  pub code: String,
+  pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilterDetection
+{
+  pub id: Uuid,
+  pub start_ms: u64,
+  pub end_ms: u64,
+  pub category: Category,
+  pub severity: Severity,
+  pub confidence: f32,
+  pub source: String,
+  pub suggested_action: Action,
+  #[serde(default)]
+  pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilterDocument
+{
+  pub version: u32,
+  pub media_id: String,
+  pub media_fingerprint: String,
+  pub analyzed_at_ms: i64,
+  pub status: FilterReadiness,
+  #[serde(default)]
+  pub problems: Vec<FilterProblem>,
+  #[serde(default)]
+  pub detections: Vec<FilterDetection>,
+}
+
+impl FilterDocument
+{
+  pub const CURRENT_VERSION: u32 = 1;
+
+  pub fn sidecar_path(media_path: impl AsRef<Path>) -> PathBuf
+  {
+    let media_path = media_path.as_ref();
+    match media_path.file_stem().and_then(|stem| stem.to_str())
+    {
+      Some(stem) => media_path.with_file_name(format!("{stem}.filter.json")),
+      None => media_path.with_extension("filter.json"),
+    }
+  }
+
+  pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self>
+  {
+    let bytes = std::fs::read(path.as_ref())?;
+    serde_json::from_slice(&bytes).map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+  }
+
+  pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()>
+  {
+    let bytes = serde_json::to_vec_pretty(self)
+      .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    std::fs::write(path.as_ref(), bytes)
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlaybackConfig
 {
   pub viewer: CategorySettings,
   pub title: CategorySettings,
   pub intervals: Vec<PlaybackInterval>,
+  #[serde(default = "default_filter_status")]
+  pub filter_status: FilterReadiness,
+  #[serde(default)]
+  pub problems: Vec<FilterProblem>,
+  #[serde(default = "default_true")]
+  pub filters_enabled: bool,
+  #[serde(default)]
+  pub warning: Option<String>,
+}
+
+fn default_filter_status() -> FilterReadiness
+{
+  FilterReadiness::Missing
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -244,6 +331,38 @@ pub struct PolicyRule
 fn default_true() -> bool
 {
   true
+}
+
+#[cfg(test)]
+mod filter_document_tests
+{
+  use super::*;
+
+  #[test]
+  fn sidecar_path_uses_media_stem()
+  {
+    let path = FilterDocument::sidecar_path("/media/Movie Name/Movie Name.mp4");
+    assert_eq!(path, PathBuf::from("/media/Movie Name/Movie Name.filter.json"));
+  }
+
+  #[test]
+  fn round_trips_filter_document()
+  {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("title.filter.json");
+    let document = FilterDocument {
+      version: FilterDocument::CURRENT_VERSION,
+      media_id: "abc".into(),
+      media_fingerprint: "fp".into(),
+      analyzed_at_ms: 1,
+      status: FilterReadiness::Partial,
+      problems: vec![FilterProblem { code: "no_language_source".into(),
+                                     message: "missing".into() }],
+      detections: vec![],
+    };
+    document.save(&path).unwrap();
+    assert_eq!(FilterDocument::load(&path).unwrap(), document);
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -443,6 +562,12 @@ fn parse_u64(value: &str, original: &str) -> Result<u64, SubtitleError>
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfanityConfig
 {
+  /// Optional JSON word list (better-profane-words format: [{word, categories, intensity}]).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub word_list_path: Option<PathBuf>,
+  /// Minimum intensity from the word list (1–5). Ignored for explicit terms/patterns.
+  #[serde(default = "default_min_intensity")]
+  pub min_intensity: u8,
   #[serde(default)]
   pub terms: Vec<String>,
   #[serde(default)]
@@ -451,42 +576,110 @@ pub struct ProfanityConfig
   pub case_sensitive: bool,
 }
 
+fn default_min_intensity() -> u8
+{
+  1
+}
+
+#[derive(Debug, Error)]
+pub enum ProfanityWordListError
+{
+  #[error("read profanity word list: {0}")]
+  Read(#[from] std::io::Error),
+  #[error("parse profanity word list: {0}")]
+  Json(#[from] serde_json::Error),
+  #[error("profanity word list must be a JSON array")]
+  InvalidFormat,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfanityWordEntry
+{
+  word: String,
+  #[serde(default)]
+  intensity: u8,
+}
+
+impl ProfanityConfig
+{
+  pub fn load_terms(&self) -> Result<Vec<String>, ProfanityWordListError>
+  {
+    let mut terms = self.terms.clone();
+    if let Some(path) = &self.word_list_path
+    {
+      if path.is_file()
+      {
+        terms.extend(load_word_list(path, self.min_intensity)?);
+      }
+    }
+    terms.retain(|term| !term.is_empty());
+    terms.sort_unstable();
+    terms.dedup();
+    Ok(terms)
+  }
+}
+
+fn load_word_list(path: &Path, min_intensity: u8) -> Result<Vec<String>, ProfanityWordListError>
+{
+  let text = std::fs::read_to_string(path)?;
+  let entries: Vec<ProfanityWordEntry> = serde_json::from_str(&text)?;
+  Ok(entries.into_iter()
+            .filter(|entry| entry.intensity >= min_intensity)
+            .map(|entry| entry.word)
+            .collect())
+}
+
+#[derive(Debug, Error)]
+pub enum ProfanityMatcherError
+{
+  #[error("profanity word list: {0}")]
+  WordList(#[from] ProfanityWordListError),
+  #[error("profanity matcher regex: {0}")]
+  Regex(#[from] regex::Error),
+}
+
 pub struct ProfanityMatcher
 {
-  regex: Option<Regex>,
+  patterns: Vec<Regex>,
 }
 
 impl ProfanityMatcher
 {
-  pub fn new(config: &ProfanityConfig) -> Result<Self, regex::Error>
+  pub fn new(config: &ProfanityConfig) -> Result<Self, ProfanityMatcherError>
   {
-    let mut patterns: Vec<String> = config.terms
-                                          .iter()
-                                          .filter(|term| !term.is_empty())
-                                          .map(|term| format!(r"\b{}\b", regex::escape(term)))
-                                          .collect();
-    patterns.extend(config.patterns.iter().cloned());
-    let regex = if patterns.is_empty()
+    let terms = config.load_terms()?;
+    let mut patterns = Vec::new();
+    const CHUNK_SIZE: usize = 400;
+    for chunk in terms.chunks(CHUNK_SIZE)
     {
-      None
+      let alternates: Vec<String> = chunk.iter()
+                                         .map(|term| format!(r"\b{}\b", regex::escape(term)))
+                                         .collect();
+      if alternates.is_empty()
+      {
+        continue;
+      }
+      patterns.push(RegexBuilder::new(&format!("(?:{})", alternates.join("|")))
+                        .case_insensitive(!config.case_sensitive)
+                        .build()?);
     }
-    else
+    if !config.patterns.is_empty()
     {
-      Some(
-                RegexBuilder::new(&format!("(?:{})", patterns.join("|")))
-                    .case_insensitive(!config.case_sensitive)
-                    .build()?,
-            )
-    };
-    Ok(Self { regex })
+      patterns.push(RegexBuilder::new(&format!("(?:{})", config.patterns.join("|")))
+                        .case_insensitive(!config.case_sensitive)
+                        .build()?);
+    }
+    Ok(Self { patterns })
   }
 
   pub fn matches<'a>(&self, text: &'a str) -> Vec<&'a str>
   {
-    self.regex
-        .as_ref()
-        .map(|regex| regex.find_iter(text).map(|item| item.as_str()).collect())
-        .unwrap_or_default()
+    let mut values = Vec::new();
+    for pattern in &self.patterns
+    {
+      values.extend(pattern.find_iter(text).map(|item| item.as_str()));
+    }
+    values
   }
 }
 
@@ -573,20 +766,29 @@ pub fn whisper_spec(executable: impl Into<PathBuf>,
 pub fn openvino_spec(runner: impl Into<PathBuf>,
                      model: impl AsRef<Path>,
                      frames_dir: impl AsRef<Path>,
-                     device: &str)
+                     device: &str,
+                     frame_interval_ms: u64,
+                     labels: Option<&Path>)
                      -> CommandSpec
 {
-  CommandSpec { program: runner.into(),
-                args: vec!["--model".into(),
-                           model.as_ref().as_os_str().to_owned(),
-                           "--input".into(),
-                           frames_dir.as_ref().as_os_str().to_owned(),
-                           "--device".into(),
-                           device.into(),
-                           "--fallback-device".into(),
-                           "CPU".into(),
-                           "--output-format".into(),
-                           "json".into(),] }
+  let mut args = vec!["--model".into(),
+                      model.as_ref().as_os_str().to_owned(),
+                      "--input".into(),
+                      frames_dir.as_ref().as_os_str().to_owned(),
+                      "--device".into(),
+                      device.into(),
+                      "--fallback-device".into(),
+                      "CPU".into(),
+                      "--output-format".into(),
+                      "json".into(),
+                      "--frame-interval-ms".into(),
+                      frame_interval_ms.to_string().into()];
+  if let Some(labels) = labels
+  {
+    args.push("--labels".into());
+    args.push(labels.as_os_str().to_owned());
+  }
+  CommandSpec { program: runner.into(), args }
 }
 
 pub fn ffmpeg_frame_sample_spec(executable: impl Into<PathBuf>,
@@ -663,6 +865,40 @@ mod tests
   }
 
   #[test]
+  fn profanity_word_list_respects_min_intensity()
+  {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("words.json");
+    std::fs::write(
+      &path,
+      r#"[{"word":"mild","intensity":1},{"word":"strong","intensity":5}]"#,
+    )
+    .unwrap();
+    let config = ProfanityConfig { word_list_path: Some(path),
+                                   min_intensity: 3,
+                                   ..Default::default() };
+    let matcher = ProfanityMatcher::new(&config).unwrap();
+    assert!(matcher.matches("strong stuff").contains(&"strong"));
+    assert!(matcher.matches("mild stuff").is_empty());
+  }
+
+  #[test]
+  fn bundled_profanity_word_list_loads()
+  {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/data/profanity-words.json");
+    if !path.is_file()
+    {
+      return;
+    }
+    let config = ProfanityConfig { word_list_path: Some(path),
+                                   min_intensity: 1,
+                                   ..Default::default() };
+    let terms = config.load_terms().unwrap();
+    assert!(terms.len() > 1000);
+    ProfanityMatcher::new(&config).unwrap();
+  }
+
+  #[test]
   fn fingerprint_changes_with_content()
   {
     let dir = tempfile::tempdir().unwrap();
@@ -676,9 +912,18 @@ mod tests
   #[test]
   fn command_specs_preserve_non_utf8_paths_and_fallback()
   {
-    let spec = openvino_spec("runner", "model.xml", "frames", "GPU");
+    let spec = openvino_spec("runner", "model.xml", "frames", "GPU", 5000, None);
     assert!(spec.args.iter().any(|arg| arg == "GPU"));
     assert!(spec.args.iter().any(|arg| arg == "CPU"));
+    assert!(spec.args.iter().any(|arg| arg == "5000"));
+    let with_labels = openvino_spec("runner",
+                                    "model.xml",
+                                    "frames",
+                                    "GPU",
+                                    5000,
+                                    Some(Path::new("labels.json")));
+    assert!(with_labels.args.iter().any(|arg| arg == "--labels"));
+    assert!(with_labels.args.iter().any(|arg| arg == "labels.json"));
   }
 
   #[test]
